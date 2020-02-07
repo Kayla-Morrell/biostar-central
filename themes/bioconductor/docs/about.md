@@ -1,7 +1,7 @@
 
 ### About this site
 
-This site provides support for Bioconductor users. Bioconductor provides
+This site provides support for [Bioconductor](https://www.bioconductor.org/) users. Bioconductor provides
 R-based software for the analysis and comprehension of high-throughput genomic
 data. Before posting, we recommend that you search the site for similar
 questions. Please look at our posting guide for tips on how to effectively ask
