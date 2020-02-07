@@ -7,7 +7,7 @@ from django.urls import reverse
 
 from biostar.recipes import auth
 from biostar.recipes import models, views, forms
-from . import util
+from biostar.utils.helpers import fake_request, get_uuid
 
 __MODULE_DIR = os.path.dirname(auth.__file__)
 TEST_ROOT = os.path.join(__MODULE_DIR, 'test')
@@ -22,7 +22,7 @@ class ProjectViewTest(TestCase):
         logger.setLevel(logging.WARNING)
 
         # Set up generic owner
-        self.owner = models.User.objects.create_user(username=f"tested{util.get_uuid(10)}", email="tested@l.com",
+        self.owner = models.User.objects.create_user(username=f"tested{get_uuid(10)}", email="tested@l.com",
                                                      is_staff=True)
         self.owner.set_password("tested")
 
@@ -42,7 +42,7 @@ class ProjectViewTest(TestCase):
         data = {'name': 'My project', 'uid': 'example', "summary": "summary", "rank": 100,
                 'text': 'tested', "privacy": models.Project.PRIVATE, "image": image_stream}
 
-        request = util.fake_request(url=reverse('project_create'), data=data, user=self.owner)
+        request = fake_request(url=reverse('project_create'), data=data, user=self.owner)
         response = views.project_create(request)
 
         image_stream.close()
@@ -54,7 +54,7 @@ class ProjectViewTest(TestCase):
 
         url = reverse('project_delete', kwargs=dict(uid=self.owner.profile.uid))
 
-        request = util.fake_request(url=url, method='GET', data={}, user=self.owner)
+        request = fake_request(url=url, method='GET', data={}, user=self.owner)
 
         response = views.project_delete(request, uid=self.project.uid)
 
@@ -72,7 +72,7 @@ class ProjectViewTest(TestCase):
 
         url = reverse('project_edit', kwargs=dict(uid=self.project.uid))
 
-        request = util.fake_request(url=url, data=data, user=self.owner)
+        request = fake_request(url=url, data=data, user=self.owner)
 
         response = views.project_edit(request, uid=self.project.uid)
 
@@ -89,12 +89,27 @@ class ProjectViewTest(TestCase):
 
         url = reverse('project_users', kwargs=dict(uid=self.project.uid))
 
-        request = util.fake_request(url=url, data=data, user=self.owner)
+        request = fake_request(url=url, data=data, user=self.owner)
 
         response = views.project_users(request, uid=self.project.uid)
 
         data['uid'] = self.project.uid
-        self.process_response(response=response, data=data)
+        self.assertEqual(response.status_code, 200, f"Error with response code :\nresponse:{response}")
+
+    def test_project_share(self):
+        "Test project share by access it using a sharable token."
+
+        url = reverse('project_share', kwargs=dict(token=self.project.sharable_token))
+
+        self.project.privacy = models.Project.SHAREABLE
+        self.project.save()
+
+        request = fake_request(url=url, method='GET', data={}, user=self.owner)
+        response = views.project_share(request, token=self.project.sharable_token)
+
+        self.process_response(response, data={})
+
+        pass
 
     def test_project_update(self):
         "Test updating the project"
@@ -103,19 +118,6 @@ class ProjectViewTest(TestCase):
                                       uid=self.project.uid, update=True)
 
         self.assertEqual(changed.uid, self.project.uid)
-
-    def test_access_forms(self):
-        " Test generating a list of forms for a given user list"
-
-        new_user = models.User.objects.create_user(username="test2", email="test2@l.com")
-        new_user.set_password("test2")
-
-        users = [self.owner, new_user]
-
-        user_forms = forms.access_forms(users, project=self.project)
-
-        # Error generating users access forms ( forms.access_forms).
-        self.assertTrue(len(users) == len(user_forms))
 
     def process_response(self, response, data, save=False):
         "Check the response on POST request is redirected"

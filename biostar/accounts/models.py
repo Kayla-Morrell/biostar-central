@@ -25,14 +25,15 @@ MAX_FIELD_LEN = 1024
 
 
 class Profile(models.Model):
-    NEW, TRUSTED, SUSPENDED, BANNED, DEACTIVATED = range(5)
-    STATE_CHOICES = [(NEW, "New"), (TRUSTED, "Active"), (DEACTIVATED, "Inactive"), (SUSPENDED, "Suspended"), (BANNED, "Banned")]
+    NEW, TRUSTED, SUSPENDED, BANNED, SPAMMER = range(5)
+    STATE_CHOICES = [(NEW, "New"), (TRUSTED, "Active"), (SPAMMER, "Spammer"),
+                     (SUSPENDED, "Suspended"), (BANNED, "Banned")]
     state = models.IntegerField(default=NEW, choices=STATE_CHOICES, db_index=True)
 
-    READER, MODERATOR, MANAGER, BLOGGER, SPAMMER = range(5)
+    READER, MODERATOR, MANAGER, BLOGGER = range(4)
     ROLE_CHOICES = [
         (READER, "Reader"), (MODERATOR, "Moderator"), (MANAGER, "Admin"),
-        (BLOGGER, "Blog User"), (SPAMMER, "Spammer")
+        (BLOGGER, "Blog User")
     ]
 
     NO_DIGEST, DAILY_DIGEST, WEEKLY_DIGEST, MONTHLY_DIGEST, ALL_MESSAGES = range(5)
@@ -106,9 +107,6 @@ class Profile(models.Model):
     # The html version of the user information.
     html = models.TextField(null=True, max_length=MAX_TEXT_LEN, blank=True)
 
-    # View the site in dark mode
-    #dark_mode = models.BooleanField(default=False)
-
     # The state of the user email verfication.
     email_verified = models.BooleanField(default=False)
 
@@ -124,16 +122,38 @@ class Profile(models.Model):
     def save(self, *args, **kwargs):
         self.uid = self.uid or util.get_uuid(8)
         self.html = self.html or mistune.markdown(self.text)
-        self.max_upload_size = self.max_upload_size or settings.MAX_UPLOAD_SIZE
+        self.max_upload_size = self.max_upload_size or self.get_upload_size()
         self.name = self.name or self.user.first_name or self.user.email.split("@")[0]
         self.date_joined = self.date_joined or now()
         self.last_login = self.last_login or now() #- timedelta(days=1)
         super(Profile, self).save(*args, **kwargs)
 
     @property
-    def is_active(self):
-        return self.state != Profile.DEACTIVATED
+    def state_dict(self):
+        return dict(self.STATE_CHOICES)
 
+    def get_upload_size(self):
+
+        # Admin users upload limit
+        if self.user.is_superuser or self.user.is_staff:
+            return settings.ADMIN_UPLOAD_SIZE
+        # Trusted users upload limit
+        if self.user.profile.trusted:
+            return settings.TRUSTED_UPLOAD_SIZE
+
+        # Get the default upload limit
+        return settings.MAX_UPLOAD_SIZE
+
+    def require_recaptcha(self):
+        """Check to see if this user requires reCAPTCHA"""
+        is_required = not (self.trusted or self.score > settings.RECAPTCHA_THRESHOLD_USER_SCORE)
+        return is_required
+
+    def get_score(self):
+        """
+        """
+        score = self.score * 10
+        return score
 
     @property
     def is_moderator(self):
@@ -143,7 +163,7 @@ class Profile(models.Model):
     @property
     def trusted(self):
         return (self.user.is_staff or self.state == self.TRUSTED or
-                self.role == self.MODERATOR or self.role == self.MANAGER or self.user.is_superuser )
+                self.role == self.MODERATOR or self.role == self.MANAGER or self.user.is_superuser)
 
     @property
     def is_manager(self):
@@ -160,6 +180,56 @@ class Profile(models.Model):
     @property
     def is_banned(self):
         return self.state == self.BANNED
+
+    @property
+    def is_spammer(self):
+        return self.state == self.SPAMMER
+
+    @property
+    def is_valid(self):
+        """
+        User is not banned, suspended, or banned
+        """
+        return not self.is_spammer and not self.is_suspended and not self.is_banned
+
+    @property
+    def recently_joined(self):
+        """
+        User that joined X amount of days are considered new.
+        """
+        recent = (util.now() - self.date_joined).days > settings.RECENTLY_JOINED_DAYS
+        return recent
+
+    @property
+    def low_rep(self):
+        """
+        User has a low score
+        """
+        return self.score <= settings.LOW_REP_THRESHOLD and not self.is_moderator
+
+
+class Logger(models.Model):
+
+    MODERATING, CREATION, EDIT, LOGIN, LOGOUT, BROWSING = range(6)
+
+    ACTIONS_CHOICES = [(MODERATING, "Preformed a moderation action."),
+                       (CREATION, "Created an object."),
+                       (EDIT, "Edited an object."),
+                       (LOGIN, "Logged in to the site."),
+                       (LOGOUT, "Logged out of the site."),
+                       (BROWSING, "Browsing the site.")]
+
+    # User that preformed this action
+    user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True)
+
+    # Action this user is took.
+    action = models.IntegerField(choices=ACTIONS_CHOICES, default=BROWSING)
+
+    # Stores the specific log text
+    log_text = models.TextField(default='')
+
+    # Date this log was created
+    date = models.DateTimeField(auto_now_add=True)
 
 
 # Connects user to message bodies
@@ -202,3 +272,6 @@ class Message(models.Model):
 
     def __str__(self):
         return f"Message {self.sender}, {self.recipient}"
+
+    def css(self):
+        return 'new' if self.unread else ''

@@ -8,7 +8,6 @@ from django.dispatch import receiver
 from django.template import loader
 from django.urls import reverse
 from django.utils import timezone
-
 from django.conf import settings
 from biostar.accounts.models import User
 from . import util
@@ -26,8 +25,12 @@ class Bunch(object):
         self.__dict__.update(kwargs)
 
 
-def make_html(text):
-    html = mistune.markdown(text)
+def make_html(text, user=None):
+
+    if user and user.profile.trusted:
+        html = mistune.markdown(text, escape=False)
+    else:
+        html = mistune.markdown(text, escape=True)
     return html
 
 
@@ -47,28 +50,64 @@ def image_path(instance, filename):
     return imgpath
 
 
+def snippet_images(instance, filename):
+    # Name the data by the filename.
+    name, ext = os.path.splitext(filename)
+    uid = instance.uid or util.get_uuid(6)
+    imgname = f"image-{uid}{ext}"
+
+    dirpath = os.path.abspath(os.path.join(settings.MEDIA_ROOT, 'snippets', 'images'))
+
+    # Uploads need to go relative to media directory.
+    path = os.path.relpath(dirpath, settings.MEDIA_ROOT)
+    imgpath = os.path.join(path, imgname)
+
+    return imgpath
+
+
 class Manager(models.Manager):
 
     def get_queryset(self):
         "Regular queries exclude deleted stuff"
-        return super().get_queryset().filter(deleted=False).select_related("owner", "owner__profile", "lastedit_user",
-                                                                           "lastedit_user__profile")
+        return super().get_queryset().select_related("owner", "owner__profile", "lastedit_user",
+                                                     "lastedit_user__profile")
 
-    def get_deleted(self, **kwargs):
-        "Only show deleted things"
-        return super().get_queryset().filter(deleted=True, **kwargs).select_related("owner", "owner__profile",
-                                                                                    "lastedit_user",
-                                                                                    "lastedit_user__profile")
 
-    def get_all(self, **kwargs):
-        "Return everything"
-        return super().get_queryset().filter(**kwargs).select_related("owner", "owner__profile", "lastedit_user",
-                                                                      "lastedit_user__profile")
+class SnippetType(models.Model):
+    image = models.ImageField(default=None, blank=True, upload_to=snippet_images, max_length=MAX_FIELD_LEN)
+    uid = models.CharField(max_length=MAX_TEXT_LEN, unique=True)
+    # The name referring to this
+    name = models.CharField(max_length=MAX_NAME_LEN)
+    owner = models.ForeignKey(User, on_delete=models.CASCADE)
+
+    # Appears to all uses
+    default = models.BooleanField(default=False)
+
+    def save(self, *args, **kwargs):
+        self.uid = self.uid or util.get_uuid(6)
+        super(SnippetType, self).save(*args, **kwargs)
+
+
+class Snippet(models.Model):
+    help_text = models.CharField(max_length=MAX_TEXT_LEN)
+    uid = models.CharField(max_length=MAX_TEXT_LEN, unique=True)
+    owner = models.ForeignKey(User, on_delete=models.CASCADE)
+    command = models.CharField(max_length=MAX_TEXT_LEN, null=True)
+    # Link a command to one type
+    type = models.ForeignKey(SnippetType, on_delete=models.CASCADE)
+
+    # Appears to all uses
+    default = models.BooleanField(default=False)
+
+    def save(self, *args, **kwargs):
+        self.uid = self.uid or util.get_uuid(6)
+        self.owner = self.owner or self.type.owner
+        super(Snippet, self).save(*args, **kwargs)
 
 
 class Project(models.Model):
     PUBLIC, SHAREABLE, PRIVATE = 1, 2, 3
-    PRIVACY_CHOICES = [(PRIVATE, "Private"), (SHAREABLE, "Shareable Link"), (PUBLIC, "Public")]
+    PRIVACY_CHOICES = [(PRIVATE, "Private"), (SHAREABLE, "Shared"), (PUBLIC, "Public")]
 
     # Rank in a project list.
     rank = models.FloatField(default=100)
@@ -91,16 +130,25 @@ class Project(models.Model):
     date = models.DateTimeField(auto_now_add=True)
     uid = models.CharField(max_length=32, unique=True)
 
+    sharable_token = models.CharField(max_length=32, null=True, unique=True)
+
+    data_count = models.IntegerField(default=0, null=True, db_index=True)
+    recipes_count = models.IntegerField(default=0, null=True, db_index=True)
+    jobs_count = models.IntegerField(default=0, null=True, db_index=True)
+
     objects = Manager()
 
     def save(self, *args, **kwargs):
         now = timezone.now()
         self.date = self.date or now
-        self.html = make_html(self.text)
+        self.sharable_token = self.sharable_token or util.get_uuid(30)
+        self.html = make_html(self.text, user=self.lastedit_user)
         self.name = self.name[:MAX_NAME_LEN]
         self.uid = self.uid or util.get_uuid(8)
         self.lastedit_user = self.lastedit_user or self.owner
         self.lastedit_date = self.lastedit_date or now
+
+        self.set_counts(save=False)
 
         if not os.path.isdir(self.get_project_dir()):
             os.makedirs(self.get_project_dir())
@@ -124,6 +172,20 @@ class Project(models.Model):
     def get_data_dir(self):
         "Match consistency of data dir calls"
         return self.get_project_dir()
+
+    def set_counts(self, save=False):
+        """
+        Set the data, recipe, and job count for this project
+        """
+        data_count = self.data_set.filter(deleted=False).count()
+        recipes_count = self.analysis_set.filter(deleted=False).count()
+        job_count = self.job_set.filter(deleted=False).count()
+
+        self.data_count = data_count
+        self.recipes_count = recipes_count
+        self.jobs_count = job_count
+        if save:
+            self.save()
 
     @property
     def is_public(self):
@@ -152,7 +214,8 @@ class Project(models.Model):
                 help=self.text,
                 url=settings.BASE_URL,
                 project_uid=self.uid,
-                id=self.pk
+                id=self.pk,
+
                 ),
             recipes=[recipe.uid for recipe in self.analysis_set.all()])
 
@@ -167,16 +230,35 @@ class Project(models.Model):
         first = lines[0]
         return first
 
+    @property
+    def is_shareable(self):
+        return self.privacy == self.SHAREABLE
+
+    def get_sharable_link(self):
+
+        # Return a sharable link if the project is shareable
+        if self.is_shareable:
+            return reverse('project_share', kwargs=dict(token=self.sharable_token))
+
+        return '/'
+
+    def get_name(self):
+        if self.deleted:
+            return f'Deleted: {self.name}'
+
+        return self.name
+
 
 class Access(models.Model):
     """
     Allows access of users to Projects.
     """
-    NO_ACCESS, READ_ACCESS, WRITE_ACCESS, = 1, 2, 3
+    NO_ACCESS, READ_ACCESS, WRITE_ACCESS, SHARE_ACCESS = 1, 2, 3, 4
     ACCESS_CHOICES = [
         (NO_ACCESS, "No Access"),
         (READ_ACCESS, "Read Access"),
         (WRITE_ACCESS, "Write Access"),
+        (SHARE_ACCESS, "Share Access"),
     ]
 
     ACCESS_MAP = dict(ACCESS_CHOICES)
@@ -235,6 +317,9 @@ class Data(models.Model):
     # FilePathField points to an existing file
     file = models.FilePathField(max_length=MAX_FIELD_LEN, path='')
 
+    # Get the file count from the toc file.
+    file_count = models.IntegerField(default=0)
+
     uid = models.CharField(max_length=32, unique=True)
 
     objects = Manager()
@@ -247,12 +332,11 @@ class Data(models.Model):
         self.name = self.name[:MAX_NAME_LEN]
         self.uid = self.uid or util.get_uuid(8)
         self.date = self.date or now
-        self.html = make_html(self.text)
+        self.html = make_html(self.text, user=self.lastedit_user)
         self.owner = self.owner or self.project.owner
         self.type = self.type.replace(" ", '')
         self.lastedit_user = self.lastedit_user or self.owner or self.project.owner
         self.lastedit_date = self.lastedit_date or now
-
         # Build the data directory.
         data_dir = self.get_data_dir()
         if not os.path.isdir(data_dir):
@@ -267,6 +351,9 @@ class Data(models.Model):
                 pass
 
         super(Data, self).save(*args, **kwargs)
+
+        # Set the counts
+        self.project.set_counts(save=True)
 
     def peek(self):
         """
@@ -320,6 +407,7 @@ class Data(models.Model):
 
         self.size = size
         self.file = tocname
+        self.file_count = len(collect)
 
         return tocname
 
@@ -351,6 +439,7 @@ class Data(models.Model):
 
         obj['files'] = fnames
         obj['toc'] = self.get_path()
+        obj['file_list'] = self.get_path()
         obj['id'] = self.id
         obj['name'] = self.name
         obj['uid'] = self.uid
@@ -367,18 +456,27 @@ class Data(models.Model):
         first = lines[0]
         return first
 
+    def get_name(self):
+        if self.deleted:
+            return f'Deleted: {self.name}'
+
+        return self.name
+
 
 class Analysis(models.Model):
-    AUTHORIZED, UNDER_REVIEW = 1, 2
+    AUTHORIZED, NOT_AUTHORIZED = 1, 2
 
-    AUTH_CHOICES = [(AUTHORIZED, "All users may run recipe"), (UNDER_REVIEW, "Only moderators may run recipe")]
+    SECURITY_STATES = [
+        (AUTHORIZED, "Trusted users may run the recipe"),
+        (NOT_AUTHORIZED, "Only administrators may run the recipe")
+    ]
 
-    security = models.IntegerField(default=UNDER_REVIEW, choices=AUTH_CHOICES)
+    security = models.IntegerField(default=NOT_AUTHORIZED, choices=SECURITY_STATES)
 
     deleted = models.BooleanField(default=False)
     uid = models.CharField(max_length=32, unique=True)
 
-    name = models.CharField(max_length=MAX_NAME_LEN, default="My Recipe")
+    name = models.CharField(max_length=MAX_NAME_LEN, default="New Recipe")
     text = models.TextField(default='This is the recipe description.', max_length=MAX_TEXT_LEN)
     html = models.TextField(default='html')
     owner = models.ForeignKey(User, on_delete=models.CASCADE)
@@ -386,10 +484,14 @@ class Analysis(models.Model):
     # The rank in a recipe list.
     rank = models.FloatField(default=100)
 
+    # Root recipe this recipe has been copied from
+    root = models.ForeignKey('self', null=True, blank=True, on_delete=models.SET_NULL)
+
     # The user that edited the object most recently.
     lastedit_user = models.ForeignKey(User, related_name='analysis_editor', null=True, on_delete=models.CASCADE)
     lastedit_date = models.DateTimeField(default=timezone.now)
 
+    #TODO: remove diff fields
     diff_author = models.ForeignKey(User, on_delete=models.CASCADE, related_name="diff_author", null=True)
     diff_date = models.DateField(blank=True, auto_now_add=True)
 
@@ -432,7 +534,8 @@ class Analysis(models.Model):
         current_settings["uid"] = self.uid
         current_settings["help"] = self.text
         current_settings["url"] = settings.BASE_URL
-
+        current_settings['root_id'] = self.root.id if self.root else ""
+        current_settings['root_uid'] = self.root.uid if self.root else ""
         # Put them back into settings.
         json_data["settings"] = current_settings
 
@@ -442,24 +545,60 @@ class Analysis(models.Model):
         now = timezone.now()
         self.uid = self.uid or util.get_uuid(8)
         self.date = self.date or now
-        self.diff_date = self.diff_date or now
         self.text = self.text or "Recipe description"
         self.name = self.name[:MAX_NAME_LEN] or "New Recipe"
-        self.html = make_html(self.text)
-        self.diff_author = self.diff_author or self.owner
+        self.html = make_html(self.text, user=self.lastedit_user)
         self.lastedit_user = self.lastedit_user or self.owner or self.project.owner
         self.lastedit_date = self.lastedit_date or now
+
+        # Clean json text of the 'settings' key unless it has the 'run' field.
 
         # Ensure Unix line endings.
         self.template = self.template.replace('\r\n', '\n') if self.template else ""
 
-        if self.security == self.AUTHORIZED:
-            self.last_valid = self.template
-
+        Project.objects.filter(uid=self.project.uid).update(lastedit_date=now,
+                                                            lastedit_user=self.lastedit_user)
+        self.project.set_counts(save=True)
         super(Analysis, self).save(*args, **kwargs)
 
     def get_project_dir(self):
         return self.project.get_project_dir()
+
+    @property
+    def is_cloned(self):
+        """
+        Return True if recipe is a clone ( linked ).
+        """
+        return self.root is not None
+
+    @property
+    def is_root(self):
+        """
+        Return True if recipe is a root.
+        """
+        return self.root is None
+
+    def update_children(self):
+        """
+        Update information for children belonging to this root.
+        """
+        # Get all children of this root
+        children = Analysis.objects.filter(root=self)
+
+        # Update all children information
+        children.update(json_text=self.json_text,
+                        template=self.template,
+                        name=self.name,
+                        security=self.security,
+                        lastedit_date=self.lastedit_date,
+                        lastedit_user=self.lastedit_user,
+                        text=self.text,
+                        html=self.html,
+                        image=self.image)
+
+        # Update last edit user and date for children projects.
+        Project.objects.filter(analysis__root=self).update(lastedit_date=self.lastedit_date,
+                                                           lastedit_user=self.lastedit_user)
 
     def url(self):
         assert self.uid, "Sanity check. UID should always be set."
@@ -467,6 +606,13 @@ class Analysis(models.Model):
 
     def runnable(self):
         return self.security == self.AUTHORIZED
+
+    def edit_url(self):
+        # Return root edit url if this recipe is cloned.
+        #if self.is_cloned:
+        #    return reverse('recipe_edit', kwargs=dict(uid=self.root.uid))
+
+        return reverse('recipe_edit', kwargs=dict(uid=self.uid))
 
     @property
     def running_css(self):
@@ -483,20 +629,11 @@ class Analysis(models.Model):
         return first
 
 
-@receiver(post_save, sender=Analysis)
-def sync_json(sender, instance, created, raw, update_fields, **kwargs):
-    # Sync the json["settings"] with the recipe.text and name.
+    def get_name(self):
+        if self.deleted:
+            return f'Deleted: {self.name}'
 
-    current_json = instance.json_data
-
-    data = current_json.get("settings") or {}
-
-    data["name"] = instance.name
-    data["help"] = instance.text
-
-    current_json["settings"] = data
-
-    Analysis.objects.get_all(uid=instance.uid).update(json_text=hjson.dumps(current_json))
+        return self.name
 
 
 class Job(models.Model):
@@ -610,7 +747,7 @@ class Job(models.Model):
         now = timezone.now()
         self.name = self.name or f"Results for: {self.analysis.name}"
         self.date = self.date or now
-        self.html = make_html(self.text)
+        self.html = make_html(self.text, user=self.lastedit_user)
         self.name = self.name[:MAX_NAME_LEN]
         self.uid = self.uid or util.get_uuid(8)
         self.template = self.analysis.template
@@ -623,6 +760,7 @@ class Job(models.Model):
 
         if not os.path.isdir(self.path):
             os.makedirs(self.path)
+        self.project.set_counts(save=True)
 
         super(Job, self).save(*args, **kwargs)
 
@@ -637,3 +775,9 @@ class Job(models.Model):
         result = template.render(context)
 
         return result
+
+    def get_name(self):
+        if self.deleted:
+            return f'Deleted: {self.name}'
+
+        return self.name

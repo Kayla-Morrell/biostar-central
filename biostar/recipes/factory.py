@@ -1,9 +1,8 @@
 from django import forms
 from django.conf import settings
-import psycopg2
+from django.db import connection
 import sqlite3
-from biostar.recipes import const
-from . import models
+from biostar.recipes import const, models, util
 
 # Share the logger with models.
 logger = models.logger
@@ -20,6 +19,19 @@ def float_field(data):
 
     field = forms.FloatField(widget=widget, initial=initial, min_value=min_value, max_value=max_value,
                              help_text=help_text, label=label, required=False)
+
+    return field
+
+
+def upload_field(data):
+    """
+    Widget used to upload files.
+    """
+    initial = str(data.get("value", ""))
+    label = str(data.get("label", ""))
+    help_text = str(data.get("help", ""))
+
+    field = forms.FileField(initial=initial, label=label, help_text=help_text)
 
     return field
 
@@ -65,9 +77,9 @@ def radioselect_field(obj):
 
 
 def db_connect(database_name=''):
-
     database_name = database_name or settings.DATABASE_NAME
     try:
+        import psycopg2
         conn = psycopg2.connect(database=database_name)
     except Exception as exc:
         logger.error(f'Error connecting to postgres database: {exc}')
@@ -82,8 +94,8 @@ def fetch_from_db(columns, table, database_name):
     query_str = f'SELECT {columns} FROM {table}'
     try:
         # connect to the database.
-        db = db_connect(database_name=database_name)
-        cursor = db.cursor()
+        conn = db_connect(database_name=database_name)
+        cursor = conn.cursor()
         cursor.execute(query_str)
 
     except Exception as exec:
@@ -94,16 +106,14 @@ def fetch_from_db(columns, table, database_name):
         colnames = [col[0] for col in cursor.description]
         rows = cursor.fetchall()
         mapped = [{col_name: val for val, col_name in zip(row, colnames)} for row in rows]
-        db.close()
+        cursor.close()
+        conn.close()
         return mapped
 
     return
 
 
 def sql_field(obj, project=None):
-
-    # White list of allowed tables
-    allowed_tables = ['data']
 
     # Dictionary to construct query from
     table = obj.get("table", 'recipes_data')
@@ -166,7 +176,7 @@ def data_field_generator(field, project, type="", extras=[]):
     are of a certain type.
     """
 
-    query = models.Data.objects.filter(project=project)
+    query = models.Data.objects.filter(project=project).exclude(deleted=True)
     if type:
         type = type.replace(" ", '')
         query = query.filter(type__iregex=type)
@@ -180,6 +190,15 @@ def data_field_generator(field, project, type="", extras=[]):
     def choice_func():
         choices = extras + [(d.id, d.name) for d in datamap.values()]
         return choices
+
+    # Add the data type to the label.
+    if type:
+        help_text = field.get('help', '')
+        type_text = f" Data Type: {type}"
+        # Add a line break for the data type
+        help_text = f'{help_text} {type_text}' if help_text else type_text
+        # Insert new help text
+        field['help'] = help_text
 
     # Returns a SELECT field with the choices.
     return select_field(field, choicefunc=choice_func)
@@ -198,7 +217,7 @@ def dynamic_field(data, project=None):
         return None
 
     # Find out the display type.
-    display_type = data.get("display")
+    display_type = data.get("display") or data.get('source')
 
     # Fields with no display type are not visible.
     if not display_type:
@@ -217,7 +236,7 @@ def dynamic_field(data, project=None):
         field = data_field_generator(data, project=project, type=data_type, extras=extras)
 
     else:
-        # In all other cases we generate a field from the tupe.
+        # In all other cases we generate a field from the tuple.
         func = field_types.get(display_type)
         if not func:
             logger.error(f"Invalid display type={display_type}")
@@ -240,7 +259,8 @@ def get_field_types(project=None):
         const.TEXTBOX: char_field,
         const.FLOAT: float_field,
         const.CHECKBOX: checkbox_field,
-        const.SQL: sqlfield
+        const.SQL: sqlfield,
+        const.UPLOAD: upload_field
     }
 
     return field_types

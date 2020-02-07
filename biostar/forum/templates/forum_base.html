@@ -1,4 +1,4 @@
-{% load staticfiles %}
+{% load static %}
 {% load compress %}
 {% load recaptcha2 %}
 {% load forum_tags %}
@@ -15,36 +15,41 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
 
     {# Set the favicon #}
-    <link rel="icon" href="{% static 'favicon.ico' %}" type="image/x-icon"/>
-
+    <link rel="icon" href="{% static 'forum_favicon.ico' %}" type="image/x-icon"/>
     {# Load JQuery. #}
+
     <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.2.1/jquery.min.js"></script>
-    <script type="text/javascript" src="{% static 'markdown-it.js' %}"></script>
+    <link rel="stylesheet" href="//cdn.jsdelivr.net/gh/highlightjs/cdn-release@9.18.0/build/styles/default.min.css">
+    <script src="//cdn.jsdelivr.net/gh/highlightjs/cdn-release@9.18.0/build/highlight.min.js"></script>
+
     {# Load recaptcha #}
     {% recaptcha_init %}
 
     {#  CSS compression. #}
     {% compress css %}
+
         <link href="{% static 'semantic.min.css' %}" rel="stylesheet">
+        <link href="{% static 'at.who.css' %}" rel="stylesheet">
         <link href="{% static 'prism.css' %}" rel="stylesheet">
         <link href="{% static 'forum.css' %}{% randparam %}" rel="stylesheet">
-        <link href="{% static 'theme.css' %}{% randparam %}" rel="stylesheet">
     {% endcompress %}
 
     {# Javascript compression. #}
     {% compress js %}
+        <script type="text/javascript" src="{% static 'markdown-it.js' %}"></script>
         <script src="{% static 'semantic.min.js' %}"></script>
+        <script src="{% static 'at.who.js' %}"></script>
+        <script src="{% static 'caret.js' %}"></script>
         <script src="{% static 'prism.js' %}"></script>
         <script src="{% static 'forum.js' %}{% randparam %}"></script>
-        <script src="{% static 'theme.js' %}{% randparam %}"></script>
     {% endcompress %}
 
-     {# Extra header content that needs to be injected into the page. #}
+    {# Optional block header content. #}
     {% block head %}
 
     {% endblock %}
 
-    {# Extra javascript content that needs to be injected into the page. #}
+    {# Optional javascaript header content. #}
     {% block js %}
 
     {% endblock %}
@@ -52,29 +57,31 @@
 </head>
 <body>
 
-<div class="ui inverted container">
+<div class="ui inverted container widen">
 
-    {% include 'widgets/top_banner.html' %}
+    {% include 'banners/top-banner.html' %}
 
-    {% include "widgets/menu-topics.html" %}
+    <span class="menus">
+        {% include "banners/menu-topics.html" %}
+        {% include "banners/menu-header.html" %}
+    </span>
 
+    <span class="phone-menus">
+        {% include "banners/menu-phone.html" %}
+    </span>
 
-    {% include "widgets/menu-header.html" %}
+    {% block container %}
+        <div class="ui bottom attached segment">
 
-    <div class="ui bottom attached segment dim-on-create  {% if user.is_authenticated %}{{ user.profile.css }}{% endif %}">
+            {% show_messages messages %}
 
-            <div class="ui inverted dimmer"></div>
+            {% block content %}
+                MAIN CONTENT
+            {% endblock %}
 
-        {% show_messages messages %}
-        <span class="fit" id="insert-form"></span>
-        <div id="error"></div>
-        <div id="recent" {% if post %}data-value="{{ post.uid }}"{% endif %}></div>
-        {% block content %}
+        </div>
+    {% endblock %}
 
-            MAIN CONTENT
-        {% endblock %}
-
-    </div>
 
     {% block footer %}
         {% include 'widgets/footer.html' %}
@@ -83,3 +90,4 @@
 
 </body>
 </html>
+

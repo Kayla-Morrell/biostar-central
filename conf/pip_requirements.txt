@@ -1,30 +1,19 @@
-django >=2.2, <3
+django >=3.0.2, <4
 django-ratelimit
-django-recaptcha==1.0.5
-django-compressor
-django-taggit
+django-compressor >= 2.4
+django-taggit>=1.2
+django-pagedown
+django-sendfile
+django-allauth>=0.41.0
+django-debug-toolbar
+django-recaptcha2
+django-mailer>=2
 whoosh
 hjson
 pytz
-html2text
 coverage
-commonmark
 bleach
-django-mailer
 mistune
-django-pagedown ==1.0.6
-django-webtest
-django-sendfile
-django-allauth
-django-debug-toolbar
-django-recaptcha2
-djangorestframework
-django-filter
-sparkpost
-pillow
 Pillow
-coverage
-pyftpdlib
-pandas
 requests
-pyopenssl
+feedparser

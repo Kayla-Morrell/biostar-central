@@ -5,7 +5,7 @@ from biostar.recipes import auth
 from biostar.recipes import models
 from django.conf import settings
 
-from . import util
+from biostar.utils.helpers import get_uuid
 from django.urls import reverse
 
 
@@ -16,7 +16,7 @@ class SiteNavigation(TestCase):
 
     def setUp(self):
         logger.setLevel(logging.WARNING)
-        self.username = f"tested{util.get_uuid(10)}"
+        self.username = f"tested{get_uuid(10)}"
 
         self.owner = models.User.objects.create(username=self.username, is_staff=True,
                                                 email="tested@tested.com")
@@ -59,6 +59,10 @@ class SiteNavigation(TestCase):
     def test_public_pages(self):
         "Checking public pages"
 
+        ajax_urls = [
+            reverse('add_vars'),
+        ]
+
         api_urls = [
 
             reverse('api_list'),
@@ -74,6 +78,7 @@ class SiteNavigation(TestCase):
         urls = [
             reverse('index'),
             reverse('logout'),
+            reverse('about'),
             reverse('login'),
             reverse('search'),
             reverse('project_list'),
@@ -92,6 +97,7 @@ class SiteNavigation(TestCase):
             reverse('recipe_run', kwargs=self.analysis_params),
             reverse('recipe_view', kwargs=self.analysis_params),
             reverse('recipe_edit', kwargs=self.analysis_params),
+            reverse('recipe_create', kwargs=self.proj_params),
             reverse('job_list', kwargs=self.proj_params),
             reverse('job_view', kwargs=self.job_params),
             reverse('job_edit', kwargs=self.job_params),
@@ -100,6 +106,7 @@ class SiteNavigation(TestCase):
 
         self.visit_urls(urls=urls, codes=[200])
         self.visit_urls(urls=api_urls, codes=[200])
+        self.visit_urls(urls=ajax_urls, codes=[200])
         self.visit_urls(anon_urls=anon_urls, urls=[], codes=[200])
 
     def test_page_redirect(self):

@@ -20,6 +20,12 @@ ADMINS = [
     ("Admin User", "admin@localhost")
 ]
 
+
+# Allowed CORES websites
+CORS_ORIGIN_WHITELIST = [
+    'https://view.qiime2.org',
+]
+
 # Shortcut to first admin information.
 ADMIN_NAME, ADMIN_EMAIL = ADMINS[0]
 
@@ -49,7 +55,6 @@ DEFAULT_APPS = [
     'compressor',
     'taggit',
     'snowpenguin.django.recaptcha2',
-    'rest_framework',
 ]
 
 # Enabled apps.
@@ -81,7 +86,6 @@ SECRET_KEY = 'secret-key'
 # Change this in production!
 API_KEY = "api-key"
 
-# Template specific settings.
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
@@ -142,7 +146,7 @@ ALLOWED_HOSTS = ['www.lvh.me', 'localhost', '127.0.0.1']
 # https://docs.djangoproject.com/en/1.11/topics/i18n/
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+TIME_ZONE = 'America/New_York'
 
 USE_I18N = True
 
@@ -170,6 +174,8 @@ MEDIA_URL = '/media/'
 # The media root directory.
 MEDIA_ROOT = join(BASE_DIR, 'export', 'media')
 
+# The root for all docs
+DOCS_ROOT = join(BASE_DIR, 'docs')
 
 STATICFILES_FINDERS = [
     'django.contrib.staticfiles.finders.FileSystemFinder',

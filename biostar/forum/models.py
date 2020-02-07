@@ -5,6 +5,7 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.sites.models import Site
 from django.db import models
+from django.db.models import Q
 from django.shortcuts import reverse
 from taggit.managers import TaggableManager
 
@@ -30,20 +31,22 @@ class Post(models.Model):
     STATUS_CHOICES = [(PENDING, "Pending"), (OPEN, "Open"), (OFFTOPIC, "Off topic"), (DELETED, "Deleted")]
 
     # Question types. Answers should be listed before comments.
-    QUESTION, ANSWER, JOB, FORUM, PAGE, BLOG, COMMENT, DATA, TUTORIAL, BOARD, TOOL, NEWS, CHAT = range(13)
+    QUESTION, ANSWER, JOB, FORUM, PAGE, BLOG, COMMENT, DATA, TUTORIAL, BOARD, TOOL, NEWS = range(12)
 
     # Valid post types.
     TYPE_CHOICES = [
         (QUESTION, "Question"), (ANSWER, "Answer"), (COMMENT, "Comment"),
-        (JOB, "Job"), (FORUM, "Forum"), (TUTORIAL, "Tutorial"), (CHAT, "Chat"),
+        (JOB, "Job"), (FORUM, "Forum"), (TUTORIAL, "Tutorial"),
         (DATA, "Data"), (PAGE, "Page"), (TOOL, "Tool"), (NEWS, "News"),
         (BLOG, "Blog"), (BOARD, "Bulletin Board")
     ]
-    TOP_LEVEL = {QUESTION, JOB, FORUM, BLOG, TUTORIAL, TOOL, NEWS, CHAT}
+    TOP_LEVEL = {QUESTION, JOB, FORUM, BLOG, TUTORIAL, TOOL, NEWS}
 
     # Possile spam states.
     SPAM, NOT_SPAM, DEFAULT = range(3)
     SPAM_CHOICES = [(SPAM, "Spam"), (NOT_SPAM, "Not spam"), (DEFAULT, "Default")]
+    # Spam labeling.
+    spam = models.IntegerField(choices=SPAM_CHOICES, default=DEFAULT)
 
     # Post status: open, closed, deleted.
     status = models.IntegerField(choices=STATUS_CHOICES, default=OPEN, db_index=True)
@@ -73,6 +76,9 @@ class Post(models.Model):
 
     # This post has been indexed by the search engine.
     indexed = models.BooleanField(default=False)
+
+    # Used for efficiency
+    #is_public_toplevel = models.BooleanField(default=False)
 
     # Show that post is top level
     is_toplevel = models.BooleanField(default=False, db_index=True)
@@ -137,9 +143,6 @@ class Post(models.Model):
     # Unique id for the post.
     uid = models.CharField(max_length=32, unique=True, db_index=True)
 
-    # Spam labeling.
-    spam = models.IntegerField(choices=SPAM_CHOICES, default=DEFAULT)
-
     def parse_tags(self):
         return [tag.lower() for tag in self.tag_val.split(",") if tag]
 
@@ -152,7 +155,11 @@ class Post(models.Model):
 
     @property
     def is_open(self):
-        return self.status == Post.OPEN
+        return self.status == Post.OPEN and not self.is_spam
+
+    @property
+    def is_question(self):
+        return self.type == Post.QUESTION
 
     @property
     def is_deleted(self):
@@ -161,6 +168,10 @@ class Post(models.Model):
     @property
     def has_accepted(self):
         return bool(self.accept_count)
+
+    @property
+    def is_spam(self):
+        return self.spam == self.SPAM
 
     @property
     def is_comment(self):
@@ -186,6 +197,7 @@ class Post(models.Model):
         self.last_contributor = self.lastedit_user
 
         # Sanitize the post body.
+        self.content = bleach.clean(self.content, attributes=markdown.ALLOWED_ATTRIBUTES)
         self.html = markdown.parse(self.content, post=self)
         self.tag_val = self.tag_val.replace(' ', '')
         # Default tags
@@ -203,11 +215,32 @@ class Post(models.Model):
     def __str__(self):
         return "%s: %s (pk=%s)" % (self.get_type_display(), self.title, self.pk)
 
+    def update_parent_counts(self):
+        """
+        Update the counts for the parent and root
+        """
+
+        descendants = Post.objects.filter(root=self.root).exclude(Q(pk=self.root.pk) | Q(status=Post.DELETED)
+                                                                  | Q(spam=Post.SPAM))
+        answer_count = descendants.filter(type=Post.ANSWER).count()
+        comment_count = descendants.filter(type=Post.COMMENT).count()
+        reply_count = descendants.count()
+        # Update the root reply, answer, and comment counts.
+        Post.objects.filter(pk=self.root.pk).update(reply_count=reply_count, answer_count=answer_count,
+                                                    comment_count=comment_count)
+
+        children = Post.objects.filter(parent=self.parent).exclude(pk=self.parent.pk)
+        com_count = children.filter(type=Post.COMMENT).count()
+
+        # Update parent reply, answer, and comment counts.
+        Post.objects.filter(pk=self.parent.pk, is_toplevel=False).update(comment_count=com_count, answer_count=0,
+                                                                         reply_count=children.count())
+
     @property
     def css(self):
         # Used to simplify CSS rendering.
         status = self.get_status_display()
-        return f"{status}".lower()
+        return 'spam' if self.is_spam else f"{status}".lower()
 
     @property
     def accepted_class(self):

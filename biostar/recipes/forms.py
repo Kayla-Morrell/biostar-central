@@ -11,6 +11,8 @@ from django.utils.safestring import mark_safe
 from django.utils.timezone import now
 from django.contrib import messages
 from django.urls import reverse
+from django.core.validators import validate_slug
+
 from django.conf import settings
 from snowpenguin.django.recaptcha2.fields import ReCaptchaField
 from snowpenguin.django.recaptcha2.widgets import ReCaptchaWidget
@@ -24,21 +26,28 @@ logger = models.logger
 
 TEXT_UPLOAD_MAX = 10000
 
+# Maximum file size that can be uploaded to recipe in megabytes.
+MAX_RECIPE_FILE_MB = 5
+
 
 def join(*args):
     return os.path.abspath(os.path.join(*args))
 
 
-def check_size(fobj, maxsize=0.3):
+def check_size(fobj, maxsize=0.3, field=None):
     # maxsize in megabytes!
-
+    error_msg = ''
     try:
         if fobj and fobj.size > maxsize * 1024 * 1024.0:
             curr_size = fobj.size / 1024 / 1024.0
-            msg = f"File too large: {curr_size:0.1f}MB should be < {maxsize:0.1f}MB"
-            raise forms.ValidationError(msg)
+            prefix = f'{field} field : '.capitalize() if field else ''
+            error_msg = prefix + f"file too large, {curr_size:0.1f}MB should be < {maxsize:0.1f}MB"
+
     except Exception as exc:
-        raise forms.ValidationError(f"File size validation error: {exc}")
+        error_msg = f"File size validation error: {exc}"
+
+    if error_msg:
+        raise forms.ValidationError(error_msg)
 
     return fobj
 
@@ -76,7 +85,6 @@ def check_upload_limit(file, user):
 
 
 def clean_file(fobj, user, project, check_name=True):
-
     if not fobj:
         return fobj
 
@@ -105,7 +113,6 @@ def add_captcha_field(request, fields):
 
 
 class ProjectForm(forms.ModelForm):
-
     image = forms.ImageField(required=False)
 
     # Should not edit uid because data directories get recreated
@@ -115,9 +122,10 @@ class ProjectForm(forms.ModelForm):
         self.request = request
         self.create = create
 
-        choices = filter(lambda pri: pri[0] != Project.SHAREABLE, Project.PRIVACY_CHOICES)
+        # choices = filter(lambda pri: pri[0] != Project.SHAREABLE, Project.PRIVACY_CHOICES)
 
-        self.fields["privacy"] = forms.CharField(widget=forms.Select(choices=choices), initial=self.instance.privacy,
+        self.fields["privacy"] = forms.CharField(widget=forms.Select(choices=Project.PRIVACY_CHOICES),
+                                                 initial=self.instance.privacy,
                                                  required=False)
 
     class Meta:
@@ -135,7 +143,7 @@ class ProjectForm(forms.ModelForm):
         cleaned_data = super(ProjectForm, self).clean()
 
         user = self.request.user
-        projects = Project.objects.get_all(owner=user)
+        projects = Project.objects.filter(owner=user)
         privacy = cleaned_data.get("privacy") or 0
 
         # Trusted users are allowed everything.
@@ -144,7 +152,8 @@ class ProjectForm(forms.ModelForm):
 
         # Check project limit.
         if self.create and projects.count() > settings.MAX_PROJECTS:
-            raise forms.ValidationError(f"You have exceeded the maximum number of projects allowed:{settings.MAX_PROJECTS}.")
+            raise forms.ValidationError(
+                f"You have exceeded the maximum number of projects allowed:{settings.MAX_PROJECTS}.")
 
         # Check privacy.
         if int(privacy) == Project.PUBLIC:
@@ -165,7 +174,6 @@ class ProjectForm(forms.ModelForm):
 
 
 class DataUploadForm(forms.ModelForm):
-
     file = forms.FileField(required=False)
     input_text = forms.CharField(max_length=TEXT_UPLOAD_MAX, required=False)
     data_name = forms.CharField(required=False)
@@ -218,7 +226,7 @@ class DataUploadForm(forms.ModelForm):
             if not cleaned_data.get("data_name"):
                 raise forms.ValidationError("Name is required with text inputs.")
 
-        total_count = Data.objects.get_all(owner=self.user).count()
+        total_count = Data.objects.filter(owner=self.user).count()
         if total_count >= settings.MAX_DATA:
             raise forms.ValidationError(f"Exceeded maximum amount of data:{settings.MAX_DATA}.")
         return cleaned_data
@@ -241,7 +249,6 @@ class DataUploadForm(forms.ModelForm):
 
 
 class DataEditForm(forms.ModelForm):
-
     type = forms.CharField(max_length=32, required=False)
 
     def __init__(self, user, *args, **kwargs):
@@ -274,9 +281,9 @@ class DataEditForm(forms.ModelForm):
 
         self.instance.lastedit_user = self.user
         self.instance.lasedit_date = now()
-        Project.objects.get_all(uid=self.instance.project.uid).update(lastedit_user=self.user,
-                                                                      lastedit_date=now()
-                                                                      )
+        Project.objects.filter(uid=self.instance.project.uid).update(lastedit_user=self.user,
+                                                                     lastedit_date=now()
+                                                                     )
 
         return super(DataEditForm, self).save(commit)
 
@@ -302,24 +309,93 @@ class DataEditForm(forms.ModelForm):
 
 
 class RecipeForm(forms.ModelForm):
+    """
+    Fields that are not submitted are set to existing values.
+    """
     image = forms.ImageField(required=False)
-    uid = forms.CharField(max_length=32, required=False)
+    uid = forms.CharField(max_length=32, validators=[validate_slug], required=True)
+    json_text = forms.CharField(max_length=MAX_TEXT_LEN, initial="{}", required=True)
+    template = forms.CharField(max_length=MAX_TEXT_LEN, initial="# Code goes here", required=True)
+    name = forms.CharField(max_length=MAX_NAME_LEN, required=True)
+    rank = forms.FloatField(required=True, initial=100)
+    text = forms.CharField(initial="Recipe description", widget=forms.Textarea, required=True)
 
-    def __init__(self, user, *args, **kwargs):
+    def __init__(self, user, creating=False, project=None, *args, **kwargs):
+        self.creating = creating
         self.user = user
+        self.project = project
+
         super().__init__(*args, **kwargs)
+
+        # Admins get an added field
+        if self.user.is_superuser:
+            authorized = self.instance.security == Analysis.AUTHORIZED
+            self.fields['authorized'] = forms.BooleanField(widget=forms.CheckboxInput(attrs={'class': 'ui checkbox'}),
+                                                           initial=authorized, required=False)
 
     class Meta:
         model = Analysis
-        fields = ["name", "image", "rank", "text", "uid"]
+        fields = ["name", "rank", "text", "uid", "json_text", "template"]
 
-    def save(self, commit=True):
+    def get_initial(self):
+        """
+        Returns the initial data to use for forms on this view.
+        """
+        initial = super(RecipeForm, self).get_initial()
+        for field in self.Meta.fields:
+            initial['field'] = getattr(self.instance, field)
 
-        self.instance.lastedit_date = now()
-        self.instance.lastedit_user = self.user
-        Project.objects.get_all(uid=self.instance.project.uid).update(lastedit_date=now(),
-                                                                      lastedit_user=self.user)
-        return super(RecipeForm, self).save(commit)
+        return initial
+
+    def validate_readable(self):
+
+        is_readable = auth.is_readable(user=self.user, project=self.project)
+        if not is_readable:
+            raise forms.ValidationError('You need read access to the project create a recipe.')
+
+    def validate_writable(self):
+        # Check write access when editing
+        is_writable = auth.writeable_recipe(user=self.user, source=self.instance, project=self.project)
+        if not is_writable:
+            raise forms.ValidationError('You need write access to the original recipe to edit.')
+
+    def clean(self):
+        """
+        Applies security measures to recipe editing.
+        """
+        cleaned_data = super(RecipeForm, self).clean()
+
+        if self.user.is_anonymous:
+            raise forms.ValidationError('You need to be logged in.')
+
+        if self.creating:
+            # Check if recipe is readable to user
+            self.validate_readable()
+        else:
+            # Check to see if the
+            self.validate_writable()
+
+        # Fill in not submitted fields.
+        for field in self.Meta.fields:
+            cleaned_data['field'] = getattr(self.instance, field)
+
+        template = self.cleaned_data.get('template') or self.instance.template
+        json_text = self.cleaned_data.get('json_text') or self.instance.json_text
+
+        # Shortcuts to security conditions.
+        template_changed = (template != self.instance.template)
+        json_changed = (json_text != self.instance.json_text)
+
+        not_superuser = not self.user.is_superuser
+
+        # Update the recipe security when template or JSON have been
+        # touched by non admin users.
+        if (json_changed or template_changed) and not_superuser and not self.creating:
+            Analysis.objects.filter(uid=self.instance.uid).update(security=Analysis.NOT_AUTHORIZED)
+            self.instance.security = Analysis.NOT_AUTHORIZED
+            self.instance.save()
+
+        return cleaned_data
 
     def clean_image(self):
         cleaned_data = super(RecipeForm, self).clean()
@@ -328,15 +404,42 @@ class RecipeForm(forms.ModelForm):
 
         return image
 
+    def clean_json_text(self):
+        cleaned_data = super(RecipeForm, self).clean()
+        json_text = cleaned_data.get('json_text')
+
+        # Ensure correct JSON syntax.
+        try:
+            hjson.loads(json_text)
+        except Exception as exc:
+            raise forms.ValidationError(f'Error with recipe JSON:{exc}')
+
+        return json_text
+
     def clean_uid(self):
         cleaned_data = super(RecipeForm, self).clean()
         uid = cleaned_data.get('uid')
-        # TODO: change second cond with a regex pattern
-        if uid and not (uid.isalnum() or "-" in uid):
-            msg = "Only alphanumeric characters allowed, no spaces."
-            raise forms.ValidationError(msg)
 
+        if self.creating:
+            # Check if uid already exists when creating a recipe.
+            recipe = Analysis.objects.filter(uid=uid).first()
+            if recipe:
+                raise forms.ValidationError("Recipe uid already exists.")
         return uid
+
+    def save(self, commit=True):
+
+        self.instance.lastedit_date = now()
+        self.instance.lastedit_user = self.user
+        Project.objects.filter(uid=self.instance.project.uid).update(lastedit_date=now(),
+                                                                     lastedit_user=self.user)
+        image = self.cleaned_data['image']
+        self.instance.image = image or self.instance.image
+        if self.user.is_superuser:
+            security = Analysis.AUTHORIZED if self.cleaned_data.get('authorized') else Analysis.NOT_AUTHORIZED
+            self.instance.security = security
+
+        return super().save(commit)
 
 
 class JobEditForm(forms.ModelForm):
@@ -350,56 +453,11 @@ class JobEditForm(forms.ModelForm):
         fields = ['name', "image", 'text']
 
     def save(self, commit=True):
-
         self.instance.lastedit_date = now()
         self.instance.lastedit_user = self.user
-        Project.objects.get_all(uid=self.instance.project.uid).update(lastedit_date=now(),
-                                                                      lastedit_user=self.user)
+        Project.objects.filter(uid=self.instance.project.uid).update(lastedit_date=now(),
+                                                                     lastedit_user=self.user)
         return super().save(commit)
-
-
-class ChangeUserAccess(forms.Form):
-    user_id = forms.IntegerField(required=True, widget=forms.HiddenInput())
-    project_uid = forms.CharField(required=True, widget=forms.HiddenInput())
-    access = forms.IntegerField(initial=Access.NO_ACCESS,
-                                widget=forms.Select(choices=Access.ACCESS_CHOICES))
-
-    def save(self):
-        "Changes users access to a project"
-
-        user_id = self.cleaned_data["user_id"]
-        project_uid = self.cleaned_data["project_uid"]
-        user = User.objects.filter(id=user_id).first()
-        project = Project.objects.filter(uid=project_uid).first()
-        current = Access.objects.filter(user=user, project=project)
-
-        if current:
-            current.update(access=self.cleaned_data.get("access", current.first().access))
-            return user, current.first()
-        new_access = Access(user=user, project=project,
-                            access=self.cleaned_data.get("access", Access.NO_ACCESS))
-        new_access.save()
-
-        return user, new_access
-
-
-def access_forms(users, project, exclude=()):
-    """Generate a list of forms for a given user list
-    Param exclude: a list of users to exclude"""
-
-    forms = []
-    for user in users:
-        if user in exclude:
-            continue
-        access = Access.objects.filter(user=user, project=project).first()
-        initial = dict(access=Access.NO_ACCESS, user_id=user.id)
-        if access:
-            initial = dict(access=access.access, user_id=user.id)
-
-        access_form = ChangeUserAccess(initial=initial)
-        forms.append((user, access_form))
-
-    return forms
 
 
 def clean_text(textbox):
@@ -410,7 +468,7 @@ class RecipeInterface(forms.Form):
     # The name of results when running the recipe.
     # name = forms.CharField(max_length=256, label="Name", help_text="This is how you can identify the run.")
 
-    def __init__(self, request, analysis, json_data, add_captcha=True, *args, **kwargs):
+    def __init__(self, request, json_data, analysis=None, project=None, add_captcha=True, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
         # The json data determines what fields does the form have.
@@ -418,7 +476,7 @@ class RecipeInterface(forms.Form):
 
         # The project is required to select data from.
         self.analysis = analysis
-        self.project = analysis.project
+        self.project = analysis.project if analysis else project
 
         # Get request specific information
         self.request = request
@@ -432,160 +490,44 @@ class RecipeInterface(forms.Form):
             if field:
                 self.fields[name] = field
 
-        if add_captcha:
+        if 0:
             add_captcha_field(request=request, fields=self.fields)
 
     def clean(self):
 
         # Validate default fields.
         super(RecipeInterface, self).clean()
-
-        if self.user.is_anonymous:
-            msg = "You must be logged in."
+        valid, msg = auth.validate_recipe_run(user=self.user, recipe=self.analysis)
+        if not valid:
             raise forms.ValidationError(msg)
 
-        if not auth.authorize_run(user=self.user, recipe=self.analysis):
-            msg = "Insufficient permission to execute recipe."
-            raise forms.ValidationError(msg)
+        for field, item in self.json_data.items():
 
-        if self.analysis.deleted:
-            msg = "Can not run a deleted recipe."
-            raise forms.ValidationError(msg)
-
-        # Non-staff users have job limits.
-        running_jobs = Job.objects.filter(owner=self.user, state=Job.RUNNING)
-        if (not self.user.is_staff) and running_jobs.count() >= settings.MAX_RUNNING_JOBS:
-            msg = "Exceeded maximum amount of running jobs allowed. Please wait until some finish."
-            raise forms.ValidationError(msg)
+            if field in self.cleaned_data and item.get('display') == UPLOAD:
+                stream = self.request.FILES.get(field)
+                if not stream:
+                    continue
+                # Validate the file size.
+                check_size(stream, field=field, maxsize=MAX_RECIPE_FILE_MB)
 
         self.validate_text_fields()
 
     def validate_text_fields(self):
         """Validate Character fields """
-
+        bool_map = {'false': False, 'true': True}
         # Default pattern matches any alphanumeric string with a given length
-        default_pattern = r"^\w{1,10}$"
+        default_pattern = r"^\w{1,20}$"
 
-        for field in self.json_data:
+        for field, item in self.json_data.items():
             val = self.cleaned_data.get(field)
 
             # Validate text fields
-            if (val is None) or (self.json_data[field].get("display") != TEXTBOX):
+            if (val is None) or (item.get("display") != TEXTBOX):
                 continue
 
             # Acceptable regex pattern
-            regex_pattern = self.json_data[field].get("regex", default_pattern)
+            regex_pattern = item.get("regex", default_pattern)
 
             if re.fullmatch(regex_pattern, val) is None:
                 msg = f"{field} : contains invalid patterns. Valid pattern:{regex_pattern}."
                 raise forms.ValidationError(msg)
-
-    def fill_json_data(self):
-        """
-        Produces a filled in JSON data based on user input.
-        Should be called after the form has been filled and is valid.
-        """
-
-        # Creates a data.id to data mapping.
-        store = dict((data.id, data) for data in self.project.data_set.all())
-
-        # Make a copy of the original json data used to render the form.
-        json_data = copy.deepcopy(self.json_data)
-
-        # Alter the json data and fill in the extra information.
-        for field, item in json_data.items():
-
-            # If the field is a data field then fill in more information.
-            if item.get("source") == "PROJECT":
-                data_id = int(self.cleaned_data.get(field))
-                data = store.get(data_id)
-                # This mutates the `item` dictionary!
-                data.fill_dict(item)
-                continue
-
-            # The JSON value will be overwritten with the selected field value.
-            if field in self.cleaned_data:
-                value = self.cleaned_data[field]
-                # Clean the textbox value
-                item["value"] = value if item['display'] != TEXTBOX else clean_text(value)
-
-        return json_data
-
-
-class EditCode(forms.Form):
-    SAVE = "SAVE"
-
-    # Determines what action to perform on the form.
-    action = forms.CharField()
-
-    # The script template.
-    template = forms.CharField(required=False)
-
-    # The json specification.
-    json = forms.CharField(required=False)
-
-    def __init__(self, user, project, recipe, *args, **kwargs):
-        self.user = user
-        self.recipe = recipe
-        self.project = project
-        super().__init__(*args, **kwargs)
-
-    def clean_json(self):
-        cleaned_data = super(EditCode, self).clean()
-        json_text = cleaned_data.get("json")
-        try:
-            hjson.loads(json_text)
-        except Exception as exc:
-            msg = f"Invalid json: {exc}"
-            raise forms.ValidationError(msg)
-        return json_text
-
-    def clean(self):
-        cleaned_data = super(EditCode, self).clean()
-        action = cleaned_data.get("action")
-
-        if action == self.SAVE:
-
-            if self.user.is_anonymous:
-                msg = "Anonymous users may not save the form."
-                raise forms.ValidationError(msg)
-
-            # Write access to the object.
-            #allow = Access.objects.filter(user=self.user, project=self.project, access=Access.WRITE_ACCESS).exists()
-
-            # Conditions of when we allow the save.
-            allow = self.user.is_superuser or self.user.is_staff
-
-            if not allow:
-                msg = "Only staff or admin users can save recipes."
-                raise forms.ValidationError(msg)
-
-    def save(self, commit=False):
-
-        # Templates.
-        template = self.cleaned_data['template']
-        json_text = self.cleaned_data['json']
-
-        self.recipe.json_text = json_text
-
-        # Changes to template will require a review ( only when saving ).
-        if auth.template_changed(analysis=self.recipe, template=template) and commit:
-            self.recipe.diff_author = self.user
-            self.recipe.diff_date = now()
-
-        # Recipes edited by non staff members need to be authorized.
-        if not self.user.is_staff:
-            self.recipe.security = Analysis.UNDER_REVIEW
-
-        # Set the new template.
-        self.recipe.template = template
-
-        # Only the SAVE action commits the changes on the analysis.
-        if commit:
-            self.recipe.lastedit_date = now()
-            self.recipe.lastedit_user = self.user
-            Project.objects.get_all(uid=self.project.uid).update(lastedit_date=now(),
-                                                                 lastedit_user=self.user)
-            self.recipe.save()
-
-        return self.recipe

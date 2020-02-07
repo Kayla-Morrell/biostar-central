@@ -1,0 +1,27 @@
+ <textarea class="code" rows="40" cols="55" name="template" id="template">{{ template }}</textarea>
+
+
+    <script type="text/javascript">
+        $(document).ready(function () {
+
+            var template_edit = CodeMirror.fromTextArea(
+                document.getElementById("template"),
+                {
+                    lineNumbers: true,
+                    mode: "engine"
+                }
+            );
+            function updateTemplate() {
+                template_edit.save();
+            }
+
+            template_edit.on('change', updateTemplate);
+            {% if focus %}
+                 template_edit.focus();
+            {% endif %}
+            {% if scroll_to_bottom %}
+                template_edit.setCursor(template_edit.lineCount(), 0);
+            {% endif %}
+        });
+
+    </script>

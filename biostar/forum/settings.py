@@ -1,31 +1,18 @@
 # Inherit from the main settings file.
 
 # Inherit from the accounts settings file.
-from biostar.accounts.settings import *
+from biostar.planet.settings import *
 
 # Django debug flag.
 DEBUG = True
 
 SITE_NAME = 'Biostar Forum'
 
-# Show debug toolbar
-DEBUG_TOOLBAR = False
-
-# Override compression if needed.
-# COMPRESS_ENABLED = True
-
+# Site settings.
 POSTS_PER_PAGE = 40
 USERS_PER_PAGE = 100
 MESSAGES_PER_PAGE = 100
 TAGS_PER_PAGE = 50
-
-# Full file path to tags.
-# Each line is a list of comma separated tags.
-TAGS_OPTIONS_FILE = ''
-
-
-# Add list of contributors to the post list.
-ADD_THREAD_USERS = True
 
 # The gravatar image used for users, applied to all users.
 GRAVATAR_ICON = ''
@@ -37,13 +24,24 @@ TIME_REQUESTS = True
 
 # Indexing interval in seconds.
 INDEX_SECS_INTERVAL = 10
-# Number of results to display.
+
+# Number of results to display in total.
 SEARCH_LIMIT = 20
+
+INIT_PLANET = False
 
 # Minimum amount of characters to preform searches
 SEARCH_CHAR_MIN = 1
 
+# Number of results to display per page.
+SEARCH_RESULTS_PER_PAGE = 50
+
 BATCH_INDEXING_SIZE = 1000
+
+# Add another context processor to first template.
+TEMPLATES[0]['OPTIONS']['context_processors'] += [
+    'biostar.forum.context.forum'
+]
 
 VOTE_FEED_COUNT = 10
 LOCATION_FEED_COUNT = 5
@@ -82,20 +80,23 @@ MIDDLEWARE += [
     'biostar.forum.middleware.benchmark',
 ]
 
+# Remap the post type display to a more human friendly one.
+REMAP_TYPE_DISPLAY = False
+
 # Post types displayed when creating, empty list displays all types.
 ALLOWED_POST_TYPES = []
-
-# Enable debug toolbar specific functions
-if DEBUG_TOOLBAR:
-    FORUM_APPS.append('debug_toolbar')
-    MIDDLEWARE.append('debug_toolbar.middleware.DebugToolbarMiddleware')
 
 
 # Import the default pagedown css first, then our custom CSS sheet
 # to avoid having to specify all the default styles
-PAGEDOWN_WIDGET_CSS = ('pagedown/demo/browser/demo.css', "lib/pagedown.css",)
+PAGEDOWN_WIDGET_CSS = ('pagedown/demo/browser/demo.css',)
 
-INSTALLED_APPS = DEFAULT_APPS + FORUM_APPS + ACCOUNTS_APPS + EMAILER_APP
+INSTALLED_APPS = DEFAULT_APPS + FORUM_APPS + PLANET_APPS + ACCOUNTS_APPS + EMAILER_APP
+
+
+DOCS_ROOT = os.path.join(DOCS_ROOT, "forum")
+# Directory for the planets app.
+#PLANET_DIR = ''
 
 ROOT_URLCONF = 'biostar.forum.urls'
 

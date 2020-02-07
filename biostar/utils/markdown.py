@@ -7,6 +7,7 @@ import mistune
 import requests
 from django.shortcuts import reverse
 from django.db.models import F
+import bleach
 from django.conf import settings
 from mistune import Renderer, InlineLexer, InlineGrammar
 
@@ -47,7 +48,6 @@ http://test.biostars.org/p/p371285/
 
 '''
 
-
 # Shortcut to re.compile
 rec = re.compile
 SITE_URL = f"{settings.SITE_DOMAIN}{settings.HTTP_PORT}"
@@ -56,12 +56,17 @@ SITE_URL = f"{settings.SITE_DOMAIN}{settings.HTTP_PORT}"
 # Biostar patterns
 PORT = ':' + settings.HTTP_PORT if settings.HTTP_PORT else ''
 
+# Mistune returns h3 and p tags for markdown
 USER_PATTERN = rec(fr"^http(s)?://{settings.SITE_DOMAIN}{PORT}/accounts/profile/(?P<uid>[\w_.-]+)(/)?")
 POST_TOPLEVEL = rec(fr"^http(s)?://{settings.SITE_DOMAIN}{PORT}/p/(?P<uid>(\w+))(/)?$")
 POST_ANCHOR = rec(fr"^http(s)?://{settings.SITE_DOMAIN}{PORT}/p/\w+/\#(?P<uid>(\w+))(/)?")
 # Match any alphanumeric characters after the @.
 # These characters are allowed in handles: _  .  -
-MENTINONED_USERS = rec(r"(\@(?P<handle>[\w_.-]+))")
+MENTINONED_USERS = rec(r"(\@(?P<handle>[\w_.'-]+))")
+
+ALLOWED_ATTRIBUTES = {
+    'a': ['href', 'title', 'name'],
+}
 
 # Youtube pattern.
 YOUTUBE_PATTERN1 = rec(r"^http(s)?://www.youtube.com/watch\?v=(?P<uid>([\w-]+))(/)?")
@@ -77,7 +82,7 @@ GIST_PATTERN = rec(r"^https://gist.github.com/(?P<uid>([\w/]+))")
 GIST_HTML = '<script src="https://gist.github.com/%s.js"></script>'
 
 # Twitter pattern.
-TWITTER_PATTERN = rec(r"http(s)?://twitter.com/\w+/status(es)?/(?P<uid>([\d]+))")
+TWITTER_PATTERN = rec(r"http(s)?://(www)?.?twitter.com/\w+/status(es)?/(?P<uid>([\d]+))")
 
 
 def get_tweet(tweet_id):
@@ -114,6 +119,8 @@ class BiostarInlineGrammer(InlineGrammar):
     Mistune has a rule 'text' that sees '@' symbol as part of a regular string.
     This excludes characters around the '@' symbol from being seen by other rules.
     This subclass overrides the 'text' rule to contain `@` as a stop element in the lookahead assertion
+
+    Also the '_' character not considered special use * instead
     """
     text = re.compile(r'^[\s\S]+?(?=[\\<!\[*`~@]|https?://| {2,}\n|$)')
 
@@ -138,6 +145,7 @@ class BiostarInlineLexer(MonkeyPatch):
 
         handle = m.group("handle")
         # Query user and get the link
+        #print(handle)
         user = User.objects.filter(username=handle).first()
         if user:
             profile = reverse("user_profile", kwargs=dict(uid=user.profile.uid))
@@ -164,7 +172,9 @@ class BiostarInlineLexer(MonkeyPatch):
     def output_anchor_link(self, m):
         uid = m.group("uid")
         alt, link = f"{uid}", m.group(0)
-        return f'<a href="{link}">ANCHOR: {alt}</a>'
+        post = Post.objects.filter(uid=uid).first()
+        title = post.title if post else "Post not found"
+        return f'<a href="{link}">{title}</a>'
 
     def enable_user_link(self):
         self.rules.user_link = USER_PATTERN
@@ -227,12 +237,12 @@ class BiostarInlineLexer(MonkeyPatch):
         return f'<a href="{link}">{link}</a>'
 
 
-def parse(text, post=None):
+def parse(text, post=None, sanatize=True, escape=True):
     """
     Parses markdown into html.
     Expands certain patterns into HTML.
     """
-    # Resolve the root
+    # Resolve the root if exists.
     root = post.parent.root if (post and post.parent) else None
     inline = BiostarInlineLexer(renderer=Renderer(), root=root)
     inline.enable_post_link()
@@ -247,8 +257,9 @@ def parse(text, post=None):
     inline.enable_ftp_link()
     inline.enable_twitter_link()
 
-    markdown = mistune.Markdown(escape=True, hard_wrap=True, inline=inline)
-
+    markdown = mistune.Markdown(escape=escape, hard_wrap=True, inline=inline)
+    if sanatize:
+        text = bleach.clean(text)
     html = markdown(text)
 
     return html

@@ -17,7 +17,9 @@ logger = models.logger
 
 MIN_CHARS = 5
 MAX_CONTENT = 15000
-MIN_CONTENT = 10
+MIN_CONTENT = 5
+MAX_TITLE = 400
+MAX_TAGS = 5
 
 
 def english_only(text):
@@ -36,38 +38,41 @@ def valid_title(text):
     text = text.replace(" ", '')
     if len(text) < MIN_CHARS:
         raise ValidationError(f'Too short, please add more than {MIN_CHARS} characters.')
+    if len(text) > MAX_TITLE:
+        raise ValidationError(f'Too Long, please add less than {MAX_TITLE} characters.')
 
 
 def valid_tag(text):
     "Validates form input for tags"
 
     words = text.split(",")
-    if len(words) > 5:
+    if len(words) > MAX_TAGS:
         raise ValidationError('You have too many tags (5 allowed)')
-
-
-class CaptchaForm(forms.Form):
-
-    def __init__(self, user, *args, **kwargs):
-        self.user = user
-        super(CaptchaForm, self).__init__(*args, **kwargs)
-
-        not_trusted = True #self.user.is_authenticated and (not self.user.profile.trusted)
-
-        # Untrusted users get a recaptcha field
-        if settings.RECAPTCHA_PRIVATE_KEY and not_trusted:
-            self.fields["captcha"] = ReCaptchaField(widget=ReCaptchaWidget())
 
 
 class PostLongForm(forms.Form):
 
     choices = [opt for opt in Post.TYPE_CHOICES]
 
+    mapper = {
+              Post.QUESTION: "Ask a question", Post.TUTORIAL:"Share a Tutorial",
+              Post.JOB: "Post a Job Opening", Post.FORUM: "Start a Discussion",
+              Post.TOOL: "Share a Tool", Post.NEWS: "Announce News"
+              }
+
     choices = filter(lambda opt: (opt[1] in settings.ALLOWED_POST_TYPES) if settings.ALLOWED_POST_TYPES else
                                  (opt[0] in Post.TOP_LEVEL), choices)
 
+    # Get his
+    if settings.REMAP_TYPE_DISPLAY:
+        type_choices = []
+        for c in choices:
+            type_choices.append((c[0], mapper.get(c[0], c[1])))
+    else:
+        type_choices = choices
+
     post_type = forms.IntegerField(label="Post Type",
-                                   widget=forms.Select(choices=choices, attrs={'class': "ui dropdown"}),
+                                   widget=forms.Select(choices=type_choices, attrs={'class': "ui dropdown"}),
                                    help_text="Select a post type.")
     title = forms.CharField(label="Post Title", max_length=200, min_length=2,
                             validators=[valid_title, english_only],
@@ -77,7 +82,9 @@ class PostLongForm(forms.Form):
                               Create a new tag by typing a word then adding a comma or press ENTER or SPACE.
                               """,
                               widget=forms.HiddenInput())
-    content = forms.CharField(widget=PagedownWidget(template="widgets/pagedown.html"), validators=[english_only],
+
+    content = forms.CharField(widget=forms.Textarea,
+                              validators=[english_only],
                               min_length=MIN_CONTENT, max_length=MAX_CONTENT, label="Post Content", strip=False)
 
     def __init__(self, post=None, user=None, *args, **kwargs):
@@ -117,16 +124,18 @@ class PostLongForm(forms.Form):
     def clean_content(self):
         content = self.cleaned_data["content"]
         length = len(content.replace(" ", ""))
+
         if length < MIN_CHARS:
             raise forms.ValidationError(f"Too short, place add more than {MIN_CHARS}")
+
         return content
 
 
 class PostShortForm(forms.Form):
     MIN_LEN, MAX_LEN = 10, 10000
     parent_uid = forms.CharField(widget=forms.HiddenInput(), min_length=2, max_length=32)
-    content = forms.CharField(widget=PagedownWidget(template="widgets/pagedown.html"),
-                              min_length=MIN_LEN, max_length=MAX_LEN)
+    content = forms.CharField(widget=forms.Textarea,
+                              min_length=MIN_LEN, max_length=MAX_LEN, strip=False)
 
     def __init__(self, user=None, post=None, recaptcha=True, *args, **kwargs):
         self.user = user
@@ -140,6 +149,11 @@ class PostShortForm(forms.Form):
         if recaptcha and settings.RECAPTCHA_PRIVATE_KEY and not_trusted:
             self.fields["captcha"] = ReCaptchaField(widget=ReCaptchaWidget())
 
+    def clean_content(self):
+        content = self.cleaned_data["content"]
+
+        return content
+
 
 class CommentForm(forms.Form):
 
@@ -152,19 +166,18 @@ def mod_choices(post):
     Return available moderation options for a post.
     """
     choices = [
-        (BUMP_POST, "Bump a post"),
+        (BUMP_POST, "Bump post."),
         (MOVE_ANSWER, "Move comment to answer."),
-        (OPEN_POST, "Open deleted or off topic post"),
-        (DELETE, "Delete post")
+        (OPEN_POST, "Open post"),
+        (DELETE, "Delete post."),
+        (REPORT_SPAM, "Mark as spam.")
     ]
 
-    allowed = []
-
     # Moderation options for top level posts
-    allowed += [BUMP_POST] if post.is_toplevel else []
+    allowed = [BUMP_POST, REPORT_SPAM] if post.is_toplevel else [REPORT_SPAM]
 
     # Option to open deleted posts
-    if post.status in [Post.DELETED, Post.OFFTOPIC]:
+    if post.status in [Post.DELETED, Post.OFFTOPIC] or post.is_spam:
         allowed += [OPEN_POST]
 
     # Option to deleted open posts
@@ -192,9 +205,8 @@ class PostModForm(forms.Form):
         choices = mod_choices(post=self.post)
 
         if self.post.is_toplevel:
-            self.fields['dupe'] = forms.CharField(required=False, max_length=200)
-            self.fields['comment'] = forms.CharField(required=False, max_length=200)
-            self.fields['offtopic'] = forms.CharField(required=False, max_length=200)
+            self.fields['dupe'] = forms.CharField(required=False, max_length=1000, widget=forms.Textarea)
+            #self.fields['comment'] = forms.CharField(required=False, max_length=200, widget=forms.Textarea)
         else:
             self.fields['pid'] = forms.CharField(required=False, max_length=200, label="Parent id")
 
@@ -210,7 +222,10 @@ class PostModForm(forms.Form):
         action = self.cleaned_data.get("action")
         dupes = self.cleaned_data.get("dupe")
         pid = self.cleaned_data.get("pid")
-        offtopic = self.cleaned_data.get("offtopic")
+        offtopic = self.cleaned_data.get("comment")
+
+        if not self.user.profile.is_moderator:
+            raise forms.ValidationError("You need to be a moderator to preform that action.")
 
         if (action is None) and not (dupes or pid or offtopic):
             raise forms.ValidationError("Select an action.")

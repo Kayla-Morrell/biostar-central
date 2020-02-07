@@ -10,7 +10,7 @@ LOGIN_PRIVATE_KEY = SECRET_KEY
 RECAPTCHA_PUBLIC_KEY = ""
 RECAPTCHA_PRIVATE_KEY = ""
 
-MENU_BAR = "widgets/menubar.html"
+#MENU_BAR = "widgets/menubar.html"
 
 SEARCH_CHAR_MIN = 2
 
@@ -39,7 +39,7 @@ MAX_UPLOAD_SIZE = 10
 # Deployment specific parameters.
 PROTOCOL = "http"
 HTTP_PORT = '8000'
-BASE_URL = f"{PROTOCOL}://{SITE_DOMAIN}{HTTP_PORT}"
+BASE_URL = f"{PROTOCOL}://{SITE_DOMAIN}:{HTTP_PORT}"
 
 FTP_HOST = "localhost"
 FTP_PORT = 8021
@@ -76,11 +76,11 @@ TEMPLATES[0]['OPTIONS']['context_processors'] += [
 ]
 
 # The rest framework.
-REST_FRAMEWORK = {
-    'DEFAULT_PARSER_CLASSES': (
-        'rest_framework.parsers.MultiPartParser',
-    ),
-}
+# REST_FRAMEWORK = {
+#     'DEFAULT_PARSER_CLASSES': (
+#         'rest_framework.parsers.MultiPartParser',
+#     ),
+# }
 
 # Directory where files are extracted to
 EXTRACT_TO = join(BASE_DIR, "export", "extracted")
@@ -91,6 +91,8 @@ LOCAL_ROOT = join(BASE_DIR, 'export', 'local')
 
 # The location for the table of contents.
 TOC_ROOT = join(MEDIA_ROOT, 'tocs')
+
+IMPORT_ROOT_DIR = join(BASE_DIR, 'export', 'local')
 
 # Configure language detection
 LANGUAGE_DETECTION = ['en']
@@ -115,7 +117,7 @@ STATICFILES_FINDERS += [
 ]
 
 # Tries to load up secret settings from a predetermined module
-# This is for convenience only!
+
 try:
     from conf.run.secrets import *
     print(f"Loaded secrets from: conf.run.secrets")

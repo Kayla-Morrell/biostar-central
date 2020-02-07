@@ -5,15 +5,13 @@
 
     {#  Show title on top level posts #}
     {% if post.is_toplevel %}
-
         <div class="title wrap-text">
             {#  Page anchor. #}
             <a name="{{ post.uid }}"></a>
             {#  Post title. #}
-            {% if post.is_toplevel %}
-                <span class="hide-on-edit post-title"
-                      data-value="{{ post.uid }}">{{ post.get_type_display }}: {{ post.title }}</span>
-            {% endif %}
+
+            <span class="hide-on-edit post-title"
+                  data-value="{{ post.uid }}">{{ post.get_type_display }}: {{ post.title }}</span>
 
         </div>
     {% endif %}
@@ -25,7 +23,7 @@
         <a name="{{ post.uid }}"></a>
 
         {#  Voting regions #}
-        <div class="votebox hide-on-edit" data-value="{{ post.uid }}">
+        <div class="post votebox hide-on-edit" data-value="{{ post.uid }}">
 
             <button class="ui icon button vote upvote" data-value="{{ post.uid }}" data-type="upvote"
                     data-position="right center" data-state="{{ post.has_upvote }}" data-content="Upvote">
@@ -42,7 +40,8 @@
             {% if post.can_accept %}
                 <div class="top-padding">
                     <button class="ui icon button vote accept" data-value="{{ post.uid }}" data-type="accept"
-                            data-position="right center" data-state="{{ post.accept_count }}" data-content="Accept answer">
+                            data-position="right center" data-state="{{ post.accept_count }}"
+                            data-content="Accept answer">
                         <i class="check circle icon "></i>
                     </button>
                 </div>
@@ -53,59 +52,66 @@
 
         <div class="content wrap-text">
 
-            <div class="dimm-on-edit" data-value="{{ post.uid }}">
+            <div ondragover="allowDrop(event);" ondrop="drop(event, '{{ post.uid }}')">
 
-                <div class="ui inverted dimmer">
+                <div class="dimm-on-edit droptarget" data-value="{{ post.uid }}"
+                     ondragover="drag_over(event, $(this))"
+                     ondragleave="drag_leave(event, $(this))">
 
-                    <div class="ui text loader">
-                        <div class="muted">Entering edit mode</div>
+                    <div class="ui inverted dimmer">
+                        <div class="ui text loader">
+                            <div class="muted">Entering edit mode</div>
+                        </div>
                     </div>
 
-                </div>
+                    <div class="wrap magnify editing-drag-off" id="{{ post.uid }}"
+                         draggable="true"
+                         ondragstart="drag(event, '{{ post.uid }}');">
 
-                <div class="wrap magnify">
-                    {# Display post author. #}
+                        {# Display post author. #}
+                        <div class="hide-on-edit menu-tablet" data-value="{{ post.uid }}">
+                            {% post_user_box target_user=post.author %}
+                        </div>
+                        {# Display post content. #}
+                        {% if post.is_editable %}
+                            <div class="editable" data-value="{{ post.uid }}">{{ post.html|safe }}</div>
+                            <inplace data-value="{{ post.uid }}"></inplace>
+                        {% else %}
+                            {{ post.html|safe }}
+                        {% endif %}
+
+                    </div>
+
+
                     <div class="hide-on-edit" data-value="{{ post.uid }}">
-                        {% post_user_box user=post.author post=post %}
-                    </div>
-                    {# Display post content. #}
-                    {% if post.is_editable %}
-                        <div class="editable" data-value="{{ post.uid }}">{{ post.html|safe }}</div>
-                        <inplace data-value="{{ post.uid }}"></inplace>
-                    {% else %}
-                        {{ post.html|safe }}
-                    {% endif %}
-
-                </div>
-
-
-                <div class="hide-on-edit" data-value="{{ post.uid }}">
-                    {# Show tags #}
-                    {% if post.is_toplevel %}
-                        <span class="post-tags" data-value="{{ post.uid }}">
+                        {# Show tags #}
+                        {% if post.is_toplevel %}
+                            <span class="post-tags" data-value="{{ post.uid }}">
                     {% post_tags post=post show_views=True %}
                     </span>
-                    {% endif %}
+                        {% endif %}
 
-                    {# Show the post actions #}
-                    <div class="hide-on-comment" data-value="{{ post.uid }}">
-                        {% post_actions post=post %}
+                        {# Show the post actions #}
+
+                        <div class="hide-on-comment" data-value="{{ post.uid }}" style="display: flow-root">
+                            {% post_actions post=post %}
+                        </div>
+
+                        {#  Post moderation actions are inserted here #}
+                        <div class="moderate-insert" data-value="{{ post.uid }}"></div>
+
+                        {#  Comments form will be inserted here #}
+                        <div class="comment-insert" data-post="{{ post.uid }}"></div>
+
                     </div>
 
-                    {#  Post moderation actions are inserted here #}
-                    <div id="moderate-insert-{{ post.uid }}"></div>
-
-                    {#  Comments form will be inserted here #}
-                    <div id="comment-insert-{{ post.uid }}"></div>
-
-                    {# Render all comments #}
                 </div>
+                {# Render all comments #}
+                {% render_comments tree=tree post=post %}
             </div>
-            {% render_comments tree=tree post=post %}
+
         </div>
-
     </div>
-
 </div>
 
 

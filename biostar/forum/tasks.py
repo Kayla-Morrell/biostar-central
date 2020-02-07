@@ -25,41 +25,40 @@ def created_post(pid):
 # https://github.com/unbit/uwsgi/issues/1369
 #
 
-#@timer(secs=180)
-def update_index(*args):
-    """
-    Index 1000 posts every 3 minutes
-    """
-    from biostar.forum.models import Post
-    from biostar.forum import search
-    from django.conf import settings
-
-    # Get un-indexed posts
-    posts = Post.objects.filter(indexed=False)[:settings.BATCH_INDEXING_SIZE]
-
-
-    # Nothing to be done.
-    if not posts:
-        message("No new posts found")
-        return
-
-    message(f"Indexing {len(posts)} posts.")
-
-    # Update indexed field on posts.
-    Post.objects.filter(id__in=posts.values('id')).update(indexed=True)
-
-    try:
-        search.index_posts(posts=posts)
-        message(f"Updated search index with {len(posts)} posts.")
-    except Exception as exc:
-        message(f'Error updating index: {exc}')
-        Post.objects.filter(id__in=posts.values('id')).update(indexed=False)
-
-    return
-
+# #@timer(secs=180)
+# def update_index(*args):
+#     """
+#     Index 1000 posts every 3 minutes
+#     """
+#     from biostar.forum.models import Post
+#     from biostar.forum import search
+#     from django.conf import settings
+#
+#     # Get un-indexed posts
+#     posts = Post.objects.filter(indexed=False)[:settings.BATCH_INDEXING_SIZE]
+#
+#     # Nothing to be done.
+#     if not posts:
+#         message("No new posts found")
+#         return
+#
+#     message(f"Indexing {len(posts)} posts.")
+#
+#     # Update indexed field on posts.
+#     Post.objects.filter(id__in=posts.values('id')).update(indexed=True)
+#
+#     try:
+#         search.index_posts(posts=posts)
+#         message(f"Updated search index with {len(posts)} posts.")
+#     except Exception as exc:
+#         message(f'Error updating index: {exc}')
+#         Post.objects.filter(id__in=posts.values('id')).update(indexed=False)
+#
+#     return
 
 @spool(pass_arguments=True)
 def create_user_awards(user_id):
+
     from biostar.accounts.models import User
     from biostar.forum.models import Award, Badge, Post
     from biostar.forum.awards import ALL_AWARDS
@@ -89,6 +88,29 @@ def create_user_awards(user_id):
             message("award %s created for %s" % (badge.name, user.email))
 
 
+# @spool(pass_arguments=True)
+# def notify_watched_tags(post):
+#     """
+#     Generate notification for users that have watched tags present in the post.
+#     """
+#     # from biostar.accounts.models import User, Profile
+#     #
+#     # # Get the tags for this post
+#     # tags_list = post.tag_val.split(",")
+#     # emails = set()
+#     # # Tag list will always have 5 or less values.
+#     # for tag in tags_list:
+#     #
+#     #     users = User.objects.filter(profile__watched_tags__contains=tag)
+#     #     email_list = users.values("email", "profile__watched_tags")
+#     #
+#     #     print(email_list, "HOO")
+#     #     #emails.update(email_list)
+#
+#     print("FOOO", post.tag_val)
+#     #return
+
+
 @spool(pass_arguments=True)
 def notify_followers(subs, author, extra_context={}):
     """
@@ -107,7 +129,7 @@ def notify_followers(subs, author, extra_context={}):
         return
 
     # Select users that should be notified.
-    users = [sub.user for sub in subs if sub.user.profile.is_active]
+    users = [sub.user for sub in subs]
 
     # Every subscribed user gets local messages with any subscription type.
     create_messages(template=local_template, extra_context=extra_context, rec_list=users, sender=author)
@@ -119,6 +141,6 @@ def notify_followers(subs, author, extra_context={}):
     if not email_subs:
         return
 
-    recipient_list = [sub.user.email for sub in email_subs if sub.user.profile.is_active]
+    recipient_list = [sub.user.email for sub in email_subs]
 
     send_email(template_name=email_template, extra_context=extra_context, recipient_list=recipient_list)

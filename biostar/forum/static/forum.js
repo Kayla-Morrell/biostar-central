@@ -64,10 +64,10 @@ function error_message(elem, xhr, status, text) {
 function apply_vote(elem, post_uid, vote_type) {
 
     // Toggle the button to provide feedback
-    elem.toggleClass("on")
+    elem.toggleClass("on");
 
     // The vote handler.
-    vote_url = "/ajax/vote/"
+    vote_url = "/ajax/vote/";
 
     $.ajax(vote_url, {
         type: 'POST',
@@ -108,101 +108,18 @@ function remove_trigger() {
 }
 
 
-function edit_post(uid) {
 
-    var edit_url = '/ajax/edit/' + uid + '/';
-    // Rendered form element
-    var form_elem = $('#post-form');
-    // Inplace form container
-    var form_container = $('#new-edit');
-    // Hidden elements
-    var hidden =  $('.hide-on-edit');
-
-    // Post title inside of the form
-    var title = $('#title');
-    var content = $('#wmd-input');
-    var post_type = $('#type').dropdown('get value');
-    var tag_val = $('#tags').dropdown('get value');
-
-    // Current post content and title to replace
-    // with returned values.
-    var post_content = $('.editable[data-value="'+ uid +'"]');
-    var post_title = $('.post-title[data-value="'+ uid +'"]');
-    var post_tags = $('.post-tags[data-value="'+ uid +'"]');
-
-    //alert(content.val());
-    // Title is null and type are null
-    // meaning current post is not top level.
-    if (title.val() == null){
-        title.val('')
-    }
-    if (!($.isNumeric(post_type))) {
-        post_type = -1
-    }
-
-    $.ajax(edit_url,
-        {
-            type: 'POST',
-            dataType: 'json',
-            ContentType: 'application/json',
-            traditional: true,
-            data: {
-                'content': content.val(),
-                'title':title.val(),
-                'type':post_type,
-                'tag_val':tag_val,
-            },
-            success: function (data) {
-                if (data.status === 'error') {
-                    popup_message(form_elem, data.msg, data.status, 3000);
-                } else {
-
-                    // Clear and hide inplace form
-                    form_elem.html('');
-                    form_container.hide();
-
-                    // Show hidden items
-                    hidden.show();
-
-                    // Replace current post info with edited data
-                    post_content.html(data.html).show().focus();
-                    post_title.html(data.title).show();
-                    post_tags.html(data.tag_html).show();
-
-                    // Highlight the markdown in content
-                    post_content.find('pre').addClass('language-bash');
-                    post_content.find('code').addClass('language-bash');
-                    Prism.highlightAll();
-                }
-            },
-            error: function (xhr, status, text) {
-                error_message(form_elem, xhr, status, text)
-            }
-        })
-}
-
-
-
-function cancel_create() {
-
-    var form_container = $('#insert-form');
-    form_container.html('');
-    $('#new-post').removeClass('active');
-
-}
-
-function cancel_inplace(){
+function cancel_inplace() {
 
     var inplace_content = $('#new-edit');
     //var inplace_title = $('inplace-title[data-value="'+ uid +'"]');
-
+    $('.editing-drag-off').attr('draggable', true);
     //var title = $('.editable-title[data-value="'+ uid +'"]');
     var content = $('.editable');
     //var content = $('#wmd-input-' + uid);
     var hidden = $('.hide-on-edit');
     $('.hide-on-comment').show();
 
-    $('.dim-on-create').dimmer('hide');
     //Delete the form
     inplace_content.remove();
     //inplace_title.html("");
@@ -215,19 +132,40 @@ function cancel_inplace(){
 }
 
 
-function inplace_post_edit(elem){
+function highlight_search(target, content_elem, stop_list) {
+
+    // Find the target in the content.
+
+    var target_list = target.replace(/\s{2,}/g, ' ').split(" ");
+
+    $.each(target_list, function (index, value) {
+
+        var html = content_elem.html();
+        var insert = "<span class='search-highlight'>" + value + "</span>";
+
+        var new_html = html.replace(new RegExp(value, "ig"), insert);
+
+        // Don't highlight any stop words.
+        if ($.inArray(value, stop_list) === -1 && value.length >= 3) {
+            console.log(value, insert, html);
+            content_elem.html(new_html);
+        }
+
+    });
+}
+
+function inplace_post_edit(elem) {
 
     var uid = elem.data("value");
-    var hidden =  $('.hide-on-edit[data-value="'+ uid +'"]');
-    var form_container = $('inplace[data-value="'+ uid +'"]');
-    var dim_elem = $('.dimm-on-edit[data-value="'+ uid +'"]');
+    var hidden = $('.hide-on-edit[data-value="' + uid + '"]');
+    var form_container = $('inplace[data-value="' + uid + '"]');
+    var dim_elem = $('.dimm-on-edit[data-value="' + uid + '"]');
     var url = '/inplace/form/';
 
     // Check if other posts are being edited.
     var editing = $("#new-edit");
     $('#new-comment').remove();
     $('#add-answer').html('');
-    cancel_create();
     dim_elem.dimmer('show');
 
     if (editing.length) {
@@ -247,13 +185,16 @@ function inplace_post_edit(elem){
             type: 'GET',
             dataType: 'json',
             ContentType: 'application/json',
-            data:{
+            data: {
                 'uid': uid,
             },
             success: function (data) {
                 if (data.status === 'error') {
                     popup_message(elem, data.msg, data.status, 3000);
+                    dim_elem.dimmer('hide');
                 } else {
+                    $('.editing-drag-off[id="' + uid + '"]').attr('draggable', false);
+                    //alert($('.editing-drag-off[data-value="'+ uid + '"]').attr('draggable'));
                     elem.hide();
                     hidden.hide();
                     dim_elem.dimmer('hide');
@@ -262,8 +203,6 @@ function inplace_post_edit(elem){
                     var preview = $('#preview');
                     preview.find('pre').addClass(' language-python');
                     preview.find('code').addClass('  language-bash language-python');
-                    //preview.find('code').removeClass('lang-python');
-                    //Prism.highlightAll();
 
                 }
             },
@@ -274,228 +213,396 @@ function inplace_post_edit(elem){
 }
 
 
-function  search(query, elem, search_url) {
-    var res = $('#results');
-
-    var container = $('#contain-search');
-    var redir = container.data('redir');
-
-    container.addClass('loading search');
-    res.width(container.width());
-    res.addClass('ui search message');
-    res.html('Searching ...');
-
-    $.ajax(search_url, {
-        type: 'GET',
-        dataType: 'json',
-        ContentType: 'application/json',
-        data: {
-            'query': query,
-            'redir':redir,
-        },
-
-        success: function (data) {
-            if (data.status === 'error') {
-                popup_message($(this), data.msg, data.status);
-            } else {
-                // Success
-                //alert(data.html);
-                res.removeClass('ui message');
-                res.html('');
-
-                if (data.html === null || data.html === undefined){
-                    window.location.href = data.redir
+function highlight(text, preview) {
+    var con = markdownit({
+        html: true,
+        highlight: function (str, lang) {
+            if (lang && hljs.getLanguage(lang)) {
+                try {
+                    return '<pre class="hljs"><code>' +
+                        hljs.highlight(lang, str, true).value +
+                        '</code></pre>';
+                } catch (__) {
                 }
-                res.html(data.html);
-                container.removeClass('loading search');
             }
 
-        },
-        error: function (xhr, status, text) {
-            error_message(elem, xhr, status, text)
+            return '<pre class="hljs"><code>' + con.utils.escapeHtml(str) + '</code></pre>';
         }
     });
-}
 
-
-function highlight(text){
-
-    var con = markdownit();
     var res = con.render(text);
-    var preview = $('#preview');
+    //var preview = $('#preview');
     preview.html(res);
     preview.find('pre').addClass('language-bash');
     preview.find('code').addClass('language-bash');
+
     //Prism.highlightAll()
 }
 
-
-function get_recent(uid){
-    var recent_posts = '/ajax/recent/';
-    var elem =  $('#recent');
-    var msg = $("#msg");
-
-    var comment = $("#new-comment");
-
-        if (comment.length) {
-            // Remove comment if exists.
-            msg.remove();
-        } else {
-            // Create a new comment.
-            msg = $("<div id='msg'></div>");
-        }
-    elem.after(msg);
-    msg.css({'position': 'fixed', 'left':'auto', 'right': 'auto', 'z-index':'10000'});
-    $.ajax(recent_posts,
-            {
-                type: 'GET',
-                dataType: 'json',
-                ContentType: 'application/json',
-                data: {
-                    'uid': uid
-                },
-                success: function (data) {
-                    if (data.status === 'error') {
-                        popup_message(elem, data.msg, data.status);
-                    } else {
-                        // Populate the feed.
-
-                        if (data.nposts === undefined || data.nposts === null){
-                            return
-                        }
-                        //var contain = "<div class='ui message'>{0}, most recent: {1}</div>".f(data.nposts, data.most_recent_url);
-                        msg.html(contain)
-                    }
-                },
-                error: function (xhr, status, text) {
-                    error_message(elem, xhr, status, text)
-                }
-            })
+function allowDrop(ev) {
+    ev.preventDefault();
+    //alert(ev);
 }
 
-function chat_list(user_uid){
-    // Show list of active chats a user has
-    var chat_list_url = '/ajax/chat/list/';
-    var container = $('#contain-chat');
+var children = '';
+var dragged_over = '';
 
-    $.ajax(chat_list_url,
+function drag(ev, elem_id) {
+    //ev.preventDefault();
+    ev.dataTransfer.setData("text", elem_id);
+    //let elem = $('.droptarget[data-value="' + elem_id + '"]');
+
+    //children = '{0}'.format(elem.data('thread'));
+
+    ev.dataTransfer.setData("text", elem_id);
+    ev.target.style.opacity = "0.4";
+
+    //alert(elem_id);
+
+}
+
+function drag_leave(ev, elem) {
+
+    //let elem = $('.droptarget[data-value="' + pid + '"]');
+    elem.css('border', 'none');
+
+    //elem.css('padding', '0');
+    elem.css('opacity', '1');
+    //elem.css('backgroundColor', 'none');
+    dragged_over = '';
+    //console.log(elem.data('value'), dragged_over);
+
+}
+
+
+function reset_drag(source, target) {
+    console.log(target, source);
+    source.css('opacity', '1');
+    source.css('border', 'none');
+    target.css('opacity', '1');
+    target.css('border', 'none');
+
+}
+
+function drag_over(ev, elem) {
+    dragged_over = '';
+    //console.log(elem.attr('class'), elem.data('value'));
+    dragged_over = elem.data('value');
+    elem.css('border', '#c2ffc2 dashed 5px');
+
+}
+
+
+function drop(ev, elem_id) {
+
+    ev.preventDefault();
+
+    var source = ev.dataTransfer.getData("text");
+    let source_elem = $('#' + source);
+    source_elem.css('opacity', '1');
+    let elem = $('.droptarget[data-value="' + dragged_over + '"]');
+
+    //alert(dragged_over);
+    $.ajax('/drag/and/drop/',
+        {
+            type: 'POST',
+            dataType: 'json',
+            ContentType: 'application/json',
+            data: {
+                'uid': source,
+                'parent': dragged_over,
+
+            },
+            success: function (data) {
+                if (data.status === 'error') {
+                    popup_message(elem, data.msg, data.status, 2000);
+                    reset_drag(elem, source)
+                } else {
+                    source_elem.transition('zoom');
+                    window.location.reload();
+                    //window.location.href = data.redir;
+                    popup_message(source_elem, "Moving Post", 'success', 1000);
+                }
+            },
+            error: function (xhr, status, text) {
+                error_message(elem, xhr, status, text);
+                reset_drag(elem, source)
+            }
+        });
+
+    ev.dataTransfer.clearData();
+    dragged_over = '';
+
+    reset_drag(elem, source)
+
+
+}
+
+
+function autocomplete_users(users_list) {
+    // Add autocomplete to any text area element.
+    var autocomplete = $('.autocomplete');
+
+    // Map values in list to a list of dict [{key:'chosen', name:'displayed name'}....]
+    var vals = $.map(users_list, function (value) {
+        return {
+            key: value,
+            name: value
+        };
+    });
+
+    function img_url(username) {
+        let url = '/ajax/user/image/{0}/'.format(username);
+        return "<li> <img class='ui circular image' style='display: inline' src={0} height='20' width='20' /> <b>{1}</b></li>".format(url, username);
+
+    }
+
+    // Autocomplete settings
+    var AutocompleteSettings = {
+        // Gets triggered at @
+        at: "@",
+        data: vals,
+        displayTpl: img_url('${key}'),
+        insertTpl: '@${key}',
+        delay: 40
+    };
+
+    autocomplete.atwho(AutocompleteSettings);
+
+
+}
+
+
+function mark_spam(post_id, elem) {
+
+    $.ajax('/ajax/report/spam/' + post_id + "/",
+        {
+            type: 'GET',
+            dataType: 'json',
+            ContentType: 'application/json',
+            data: {},
+            success: function (data) {
+                //alert(elem.html());
+                if (data.status === 'error') {
+                    popup_message(elem.parent().parent(), data.msg, data.status);
+
+                } else {
+                    popup_message(elem.parent().parent(), data.msg, data.status);
+                    $('#' + post_id).removeClass('open').addClass('spam');
+                }
+
+            },
+            error: function (xhr, status, text) {
+                error_message($('#' + post_id), xhr, status, text)
+            }
+
+        });
+
+
+}
+
+
+function moderate(elem, url) {
+
+    event.preventDefault();
+    //var elem = $(this);
+    $('#modpanel').remove();
+
+    // Could be a user or post uid
+    var data_uid = elem.attr('data-value');
+
+    var container = $('.moderate-insert[data-value="' + data_uid + '"]');
+    var mod_url = url + data_uid + '/';
+    //alert("FOOO");
+    var page = $('<div id="modpanel"></div>').load(mod_url);
+    container.after(page);
+    //alert(container.html());
+}
+
+function similar_posts(elem) {
+    var uid = elem.attr('post_uid');
+    // Construct the similar posts link.
+    var feed_url = '/similar/posts/' + uid + '/';
+    var dimm_elem = $('#dim-similar');
+    dimm_elem.dimmer('show');
+
+    $.ajax(feed_url,
         {
             type: 'GET',
             dataType: 'json',
             ContentType: 'application/json',
             data: {
-                'uid': user_uid
+                'uid': uid
             },
             success: function (data) {
                 if (data.status === 'error') {
-                    popup_message(container, data.msg, data.status);
+                    popup_message(elem, data.msg, data.status);
+                    dimm_elem.dimmer('hide');
                 } else {
-                    //var contain = "<div class='ui message'>{0}, most recent: {1}</div>".f(data.nposts, data.most_recent_url);
-                    container.html(data.html)
+                    // Populate the feed.
+                    dimm_elem.dimmer('hide');
+                    elem.html(data.html);
+
                 }
             },
             error: function (xhr, status, text) {
-                error_message(container, xhr, status, text)
+                error_message(elem, xhr, status, text)
             }
         })
-
 }
 
+function change_digest(elem, item) {
+    var active = $('#digest-active');
+    var icon_container = $('#digest-icon');
+    var icon_str = item.data('icon');
+    // Subscription url
+    var digest_url = '/ajax/digest/';
+
+    $.ajax(digest_url,
+        {
+            type: 'POST',
+            dataType: 'json',
+            ContentType: 'application/json',
+            data: {
+                'pref': value
+            },
+            success: function (data) {
+                if (data.status === 'error') {
+                    popup_message(elem, data.msg, data.status);
+                } else {
+                    // Replace current item with the select one.
+                    active.text(item.text());
+                    icon_container.removeClass();
+                    icon_container.addClass(icon_str);
+                }
+            },
+            error: function (xhr, status, text) {
+                error_message(elem, xhr, status, text)
+            }
+        })
+}
+
+function change_subs(elem, value, $item) {
+    var post_id = elem.attr("data-uid");
+    // Currently selected item
+    var active = $('#sub-active');
+    // Subscription url
+    var subs_url = '/ajax/subscribe/';
+
+    $.ajax(subs_url,
+        {
+            type: 'POST',
+            dataType: 'json',
+            ContentType: 'application/json',
+            data: {
+                'root_uid': post_id,
+                'sub_type': value
+            },
+            success: function (data) {
+                if (data.status === 'error') {
+                    popup_message(elem, data.msg, data.status);
+                } else {
+                    // Replace current item with the select one.
+                    active.text($item.text());
+                }
+
+            },
+            error: function (xhr, status, text) {
+                error_message(elem, xhr, status, text)
+            }
+        })
+}
 
 $(document).ready(function () {
-     // setInterval(function(){
-     //     var recent_popup = $('#recent');
-     //     var uid = recent_popup.data("value");
-     //     if (uid === undefined || uid === null){
-     //         uid = '';
-     //     }
-     //     alert('333');
-     //     get_recent(uid)
-     //   },50000);
 
-    $('#chat').click(function () {
-        var user_uid = $(this).data('value');
-        chat_list(user_uid);
+    $('.mark-spam.item').click(function (event) {
+        var post_id = $(this).closest('.post').attr('id');
+
+        //alert($(this).closest('.post').attr('id'));
+        mark_spam(post_id, $(this));
     });
 
-    $(this).click(function(event) {
-        var res = $('#results');
-        if(typeof res.html() === 'undefined'){
-            return
-        }
-        if (res.html().length > 0){
-            res.html('');
-            res.removeClass('ui message');
-        }
+
+    function allowDrop(ev) {
+        ev.preventDefault();
+    }
+
+    $('.post.comment').mousedown(function () {
+        $(this).css('cursor', 'grabbing')
     });
 
     $('#similar-feed').each(function () {
         var elem = $(this);
-        //elem.html('asshole');
-        // Fetch feed from url url
-        var uid = elem.attr('post_uid');
-        var feed_url = '/similar/posts/' + uid + '/';
-
-
-        $.ajax(feed_url,
-            {
-                type: 'GET',
-                dataType: 'json',
-                ContentType: 'application/json',
-                data: {
-                    'uid': uid
-                },
-                success: function (data) {
-                    if (data.status === 'error') {
-                        popup_message(elem, data.msg, data.status);
-                    } else {
-                        // Populate the feed.
-                        elem.html(data.html)
-                    }
-                },
-                error: function (xhr, status, text) {
-                    error_message(elem, xhr, status, text)
-                }
-            })
+        similar_posts(elem);
     });
 
     $('.ui.dropdown').dropdown();
 
     $('.editable').click(function (event) {
-         if (event.metaKey || event.ctrlKey){
-             inplace_post_edit($(this))
-         }
+        if (event.metaKey || event.ctrlKey) {
+            inplace_post_edit($(this))
+        }
     }).dblclick(function (event) {
-         inplace_post_edit($(this))
+        inplace_post_edit($(this))
     });
 
     $('.inplace-click').click(function (event) {
+        event.preventDefault();
         var uid = $(this).data('value');
-        var elem = $('.editable[data-value="'+ uid +'"]');
+        var elem = $('.editable[data-value="' + uid + '"]');
         inplace_post_edit(elem);
     });
 
     $(this).on('keyup', '#wmd-input', function (event) {
         var text = $(this).val();
-        highlight(text);
+
+        var preview = $('#preview');
+        highlight(text, preview);
 
     });
 
     $(this).on('click', '#wmd-button-bar', function (event) {
         setTimeout(function () {
             var text = $('#wmd-input').val();
-            highlight(text);
+            var preview = $('#preview');
+            highlight(text, preview);
         }, 10);
 
     });
 
+    $(this).on('click', '#wmd-button-bar.answer', function (event) {
+        setTimeout(function () {
+            var text = $('textarea.answer').val();
+            var preview = $('#answer-preview');
+            highlight(text, preview);
+        }, 10);
+
+    });
+
+
+    $(this).on('keyup', 'textarea.answer', function (event) {
+        var text = $(this).val();
+        var preview = $('#answer-preview');
+        highlight(text, preview);
+    });
+
+
+    $(this).on('click', 'textarea.answer', function (event) {
+        setTimeout(function () {
+            var text = $('textarea.answer').val();
+            var preview = $('#answer-preview');
+            highlight(text, preview);
+        }, 10);
+
+    });
+
+
     $(this).keyup(function (event) {
-        if (event.keyCode === 27){
+        if (event.keyCode === 27) {
             $('.inplace').each(function () {
                 event.preventDefault();
                 var uid = $(this).data("value");
                 cancel_inplace(uid);
-                cancel_create();
                 $('#new-comment').remove();
                 $('#add-answer').html('');
             });
@@ -505,82 +612,20 @@ $(document).ready(function () {
 
 
     $('#digest').dropdown({
-          action:'hide',
-          onChange: function (value, text, $item) {
-          var elem = $(this);
-
-          console.log(elem.id);
-
-          // Get the root id
-          // Currently selected item
-          var active = $('#digest-active');
-          var icon_container = $('#digest-icon');
-          var icon_str = $item.data('icon');
-          // Subscription url
-          var digest_url = '/ajax/digest/';
-          $.ajax(digest_url,
-              {
-                  type: 'POST',
-                  dataType: 'json',
-                  ContentType: 'application/json',
-                  data: {
-                      'pref': value
-                  },
-                  success: function (data) {
-                      if (data.status === 'error') {
-                          popup_message(elem, data.msg, data.status);
-                      } else {
-                          // Replace current item with the select one.
-                          active.text($item.text());
-                          icon_container.removeClass();
-                          icon_container.addClass(icon_str);
-                      }
-                      },
-                  error: function (xhr, status, text) {
-                    error_message(elem, xhr, status, text)
-                  }
-              })
-          }
-        });
+        action: 'hide',
+        onChange: function (value, text, $item) {
+            var elem = $(this);
+            change_digest(elem, $item);
+        }
+    });
 
     $('#subscribe')
         .dropdown({
-          action:'hide',
-          onChange: function (value, text, $item) {
-          var elem = $(this);
-
-          console.log(elem.id);
-
-          // Get the root id
-          var post_id = elem.attr("data-uid");
-          // Currently selected item
-          var active = $('#sub-active');
-          // Subscription url
-          var subs_url = '/ajax/subscribe/';
-
-          $.ajax(subs_url,
-              {
-                  type: 'POST',
-                  dataType: 'json',
-                  ContentType: 'application/json',
-                  data: {
-                      'root_uid': post_id,
-                      'sub_type': value
-                  },
-                  success: function (data) {
-                      if (data.status === 'error') {
-                          popup_message(elem, data.msg, data.status);
-                      } else {
-                          // Replace current item with the select one.
-                          active.text($item.text());
-                      }
-
-                      },
-                  error: function (xhr, status, text) {
-                    error_message(elem, xhr, status, text)
-                  }
-              })
-          }
+            action: 'hide',
+            onChange: function (value, text, $item) {
+                var elem = $(this);
+                change_subs(elem, value, $item);
+            }
         });
 
     $(".add-comment").click(function (event) {
@@ -589,15 +634,10 @@ $(document).ready(function () {
         var create_url = '/inplace/form/';
         var parent_uid = $(this).data('value');
 
-        //var container = $("#comment-insert-" + parent_uid);
-        var container = $("#comment-insert-" + parent_uid);
-        //var url = "/new/comment/" + post_uid + "/";
-        var post_actions = $('.hide-on-comment[data-value="'+ parent_uid +'"]');
-        cancel_inplace();
-        $('#insert-form').html('');
-        $('#new-post').removeClass('active');
+        var container = $('.comment-insert[data-post="' + parent_uid + '"]');
+        var post_actions = $('.hide-on-comment[data-value="' + parent_uid + '"]');
 
-        $('#add-answer').html('');
+        cancel_inplace();
 
         // Check for existing comment.
         var comment = $("#new-comment");
@@ -619,17 +659,17 @@ $(document).ready(function () {
                 dataType: 'json',
                 ContentType: 'application/json',
                 data: {
-                    'parent': parent_uid,
-                    'comment': 1,
-                    'top': 0,
-                    'rows':6,
+                    'uid': parent_uid,
+                    'add_comment': 1,
                 },
                 success: function (data) {
                     if (data.status === 'error') {
-                        popup_message($('#error'), data.msg, data.status);
+
+                        popup_message(container, data.msg, data.status);
+
                     } else {
                         post_actions.hide();
-                        comment.css({'padding-top': '5px', 'padding-bottom':'5px'});
+                        comment.css({'padding-top': '5px', 'padding-bottom': '5px'});
                         comment.html(data.inplace_form);
                         //container.transition('slide down', 250);
                         comment.find('#wmd-input').focus();
@@ -643,99 +683,17 @@ $(document).ready(function () {
 
     remove_trigger();
 
-    $('#search').keyup(function (event) {
-        var query = $(this).val();
-        var search_url = $(this).attr('url');
-        // Only preform searches when pressing ENTER
-        if (event.keyCode === 13){
-            search(query, $(this), search_url);
-        }
-    });
-
-    $('#new-post').click(function () {
-        var create_url = '/inplace/form/';
-        var form_container = $('#insert-form');
-
-        cancel_inplace();
-        $('#new-comment').remove();
-        $('#add-answer').html('');
-        $('.dim-on-create').dimmer('hide');
-        $.ajax(create_url,
-            {
-                type: 'GET',
-                dataType: 'json',
-                ContentType: 'application/json',
-                data: {
-                    'rows':13,
-                },
-                success: function (data) {
-                    if (data.status === 'error') {
-                        popup_message($('#error'), data.msg, data.status);
-                    } else {
-                        $('#menu-header > .item').each(function () {
-                            $(this).removeClass('active');
-                        });
-                        $('#new-post').addClass('active');
-
-                        form_container.html(data.inplace_form);
-                        form_container.show();
-                        form_container.find('#title').focus();
-                        $('.dim-on-create').dimmer('show');
-                    }
-
-                },
-                error: function (xhr, status, text) {
-                    error_message($(this), xhr, status, text)
-                }
-            })
-    });
-
     $(".moderate-post").click(function (event) {
         event.preventDefault();
         var elem = $(this);
-
-        $('#modpanel').remove();
-
-        // Could be a user or post uid
-        var data_uid = elem.attr('data-value');
-
-        var container = $("#moderate-insert-" + data_uid);
-        var mod_url = '/moderate/' + data_uid + '/';
-
-        var page = $('<div id="modpanel"></div>').load(mod_url);
-        container.after(page)
-
-    });
-
-    $('a').click(function () {
-        $(this).transition('pulse', 295);
-    });
-
-    $(this).on('click', '.show-preview', function() {
-        var contain = $('#html-preview');
-        var preview = $('#preview');
-        contain.transition('slide down', 400);
-        preview.find('pre').addClass('language-bash');
-        preview.find('code').addClass('language-bash');
-        //Prism.highlightAll();
-        //Prism.highlightAll(preview.find('code'));
-
+        moderate(elem, '/moderate/');
     });
 
     $(".moderate-user").click(function (event) {
         event.preventDefault();
         var elem = $(this);
+        moderate(elem, '/accounts/moderate/');
 
-        $('#modpanel').remove();
-
-        // Could be a user or post uid
-        var data_uid = elem.attr('data-value');
-
-        var container = $("#moderate-insert-" + data_uid);
-        var mod_url = '/accounts/moderate/'+ data_uid + '/';
-
-        var page = $('<div id="modpanel"></div>').load(mod_url);
-        container.after(page)
     });
 
     $('.vote').each(function (event) {
@@ -774,70 +732,15 @@ $(document).ready(function () {
 
     $(this).on('click', '#cancel', function () {
         $('#new-comment').remove();
-        cancel_create();
         cancel_inplace();
-        $('#add-answer').html('');
-    });
-    $('.ui.sticky').sticky()
-    ;
-
-    $('.display-answer').click(function() {
-        var create_url = '/inplace/form/';
-        var form_container = $('#add-answer');
-        var parent_uid = form_container.data('value');
-        //var form_is_visible = $('#insert-form.visible').val() != null;
-
-        $('#new-comment').remove();
-        cancel_inplace();
-        cancel_create();
-        // Avoid hitting the server when the form is already visible.
-
-        $.ajax(create_url,
-            {
-                type: 'GET',
-                dataType: 'json',
-                ContentType: 'application/json',
-                data: {
-                    'rows': 15,
-                    'parent': parent_uid,
-                    'top':0,
-                },
-                success: function (data) {
-                    if (data.status === 'error') {
-                        popup_message($('#error'), data.msg, data.status);
-                    } else {
-                        form_container.html(data.inplace_form);
-                        form_container.show();
-                        form_container.find('#wmd-input').focus();
-                    }
-
-                },
-                error: function (xhr, status, text) {
-                    error_message($(this), xhr, status, text)
-                }
-            })
     });
 
+    $('.ui.sticky').sticky();
     //$('#chat-drop')
     $('pre').addClass('language-bash');
     $('code').addClass('language-bash');
     Prism.highlightAll();
-    var preview = $('#id_content_wmd_preview');
 
-    $('#id_content').keyup(function () {
-        preview.find('code').addClass('language-bash');
-        preview.find('pre').addClass('language-bash');
-    }).keydown(function () {
-        preview.find('code').addClass('language-bash');
-        preview.find('pre').addClass('language-bash');
-    });
-
-    $('#id_content_wmd_button_bar').click(function () {
-        setTimeout(function () {
-            preview.find('code').addClass('language-bash');
-            preview.find('pre').addClass('language-bash');
-        }, 10)
-    });
 
     $('.tag-field').dropdown({
 
@@ -845,70 +748,78 @@ $(document).ready(function () {
         // Get form field to add to
         onChange: function (value, text, $selectedItem) {
             // Get form field to add to
-            var tagid = $("#tag-menu").attr('field_id');
+
+            var tagid = $(this).children('select').attr('field_id');
             var tag_field = $('#{0}'.f(tagid));
             // Add selected tag to field
-            //alert(value);
             tag_field.val(value);
+
         }
-        });
+    });
 
-    $('.tag-field >input.search').keydown(function (event) {
-
-        //event.stopPropagation();
+    $('.tag-field > input.search').keydown(function (event) {
         // Prevent submitting form when adding tag by pressing ENTER.
         if (event.keyCode === 13) {
             event.preventDefault();
-            //alert($('#my_tags_id').val());
-            //event.stopPropagation();
         }
         // Set value with SPACE bar
         if (event.keyCode === 32) {
             event.preventDefault();
-            //event.stopPropagation();
-            $("#tag-menu").dropdown('set selected', $(this).val().trim());
+            //alert(alert( $(this).parent('.tag-field').children('select').attr('class')));
+            $(this).parent('.tag-field').children('select').dropdown('set selected', $(this).val().trim());
             $(this).val('');
-            //alert($('#my_tags_id').val());
         }
 
     });
 
-    $('.watched-tag-field').dropdown({
-        allowAdditions: true,
-        onChange: function (value, text, $selectedItem) {
-            // Get form field to add to
-            var tagid = $("#watched-tags").attr('field_id');
-            var tag_field = $('#{0}'.f(tagid));
-            // Add selected tag to field
-            //alert(value);
-            tag_field.val(value);
-        }
-    });
-
-    $('.watched-tag-field >input.search').keydown(function (event) {
-        //event.stopPropagation();
-        // Prevent submitting form when adding tag by pressing ENTER.
-        if (event.keyCode === 13) {
-            event.preventDefault();
-            //event.stopPropagation();
-        }
-        // Set value with SPACE bar
-        if (event.keyCode === 32) {
-            event.preventDefault();
-            //event.stopPropagation();
-            $("#watched-tags").dropdown('set selected', $(this).val().trim());
-            $(this).val('')
-
-        }
-
-    });
+    // $('.watched-tag-field').dropdown({
+    //     allowAdditions: true,
+    //     onChange: function (value, text, $selectedItem) {
+    //         var tagid = $("#tag-menu").attr('field_id');
+    //         var tag_field = $('#{0}'.f(tagid));
+    //         // Add selected tag to field
+    //         //alert(value);
+    //         // Add selected tag to field
+    //         //alert(value);
+    //         tag_field.val(value);
+    //     }
+    // });
+    //
+    // $('.watched-tag-field >input.search').keydown(function (event) {
+    //     // Prevent submitting form when adding tag by pressing ENTER.
+    //     if (event.keyCode === 13) {
+    //         event.preventDefault();
+    //     }
+    //     // Set value with SPACE bar
+    //     if (event.keyCode === 32) {
+    //         event.preventDefault();
+    //         $("#watched-tags").dropdown('set selected', $(this).val().trim());
+    //         $(this).val('')
+    //
+    //     }
+    //
+    // });
 
     $('#show-answer').click(function () {
         $('.hidden-answer').show()
     });
 
     $('.vote').popup({
-        on:'hover'
-    })
+        on: 'hover'
+    });
+
+    $('.trigger-highlight').each(function (event) {
+        var elem = $(this);
+        let container = $('#search-results');
+        let query = container.data('query');
+        let stop_words = container.data('stop');
+
+        if (container.html() === undefined || container.html() === null) {
+        } else {
+            let stop_list = stop_words.split(',');
+            highlight_search(query, elem, stop_list)
+        }
+
+    });
 })
 ;

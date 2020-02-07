@@ -3,7 +3,7 @@ from django.db.models.signals import post_save
 from django.dispatch import receiver
 from taggit.models import Tag
 from django.db.models import F, Q
-from biostar.accounts.models import Profile, Message
+from biostar.accounts.models import Profile, Message, User
 from .models import Post, Award, Subscription
 from . import tasks, auth, util
 
@@ -32,12 +32,14 @@ def ban_user(sender, instance, created, **kwargs):
     """
 
     if instance.state == Profile.BANNED:
-
         # Delete all posts by this users
         #print(Post.objects.filter(author=instance.user).thread_users)
         Post.objects.filter(author=instance.user).delete()
-
-        #Post.objects.filter(author=instance.user)
+        #print(Post.objects.filter(author=instance))
+        # Remove all 'lastedit user' flags
+        # posts = Post.objects.filter(lastedit_user=instance.user)
+        # for post in posts:
+        #     Post.objects.filter(id=post.id).update(lastedit_user=post.author)
 
         # Delete all awards by the user.
         Award.objects.filter(user=instance.user).delete()
@@ -101,20 +103,7 @@ def finalize_post(sender, instance, created, **kwargs):
 
         # Save the instance.
         instance.save()
-
-        descendants = Post.objects.filter(root=instance.root).exclude(pk=instance.root.pk)
-        answer_count = descendants.filter(type=Post.ANSWER).count()
-        comment_count = descendants.filter(type=Post.COMMENT).count()
-        reply_count = descendants.count()
-        # Update the root reply, answer, and comment counts.
-        Post.objects.filter(pk=instance.root.pk).update(reply_count=reply_count, answer_count=answer_count,
-                                                        comment_count=comment_count)
-
-        children = Post.objects.filter(parent=instance.parent).exclude(pk=instance.parent.pk)
-        com_count = children.filter(type=Post.COMMENT).count()
-        # Update parent reply, answer, and comment counts.
-        Post.objects.filter(pk=instance.parent.pk, is_toplevel=False).update(comment_count=com_count,
-                                                                             reply_count=children.count())
+        instance.update_parent_counts()
 
         # Bump the root rank when a new descendant is added.
         Post.objects.filter(uid=instance.root.uid).update(rank=util.now().timestamp())
@@ -125,10 +114,13 @@ def finalize_post(sender, instance, created, **kwargs):
         # Get all subscribed users when a new post is created
         subs = Subscription.objects.filter(post=instance.root)
 
+        # Notify users who are watching tags in this post
+        #tasks.notify_watched_tags(post=instance)
+
     # Ensure posts get re-indexed after being edited.
     Post.objects.filter(uid=instance.uid).update(indexed=False)
 
     # Exclude current authors from receiving messages from themselves
-    subs = subs.exclude(Q(type=Subscription.NO_MESSAGES) | Q(user=instance.author) | Q(user__profile__state=Profile.DEACTIVATED))
+    subs = subs.exclude(Q(type=Subscription.NO_MESSAGES) | Q(user=instance.author))
     extra_context = dict(post=instance)
     tasks.notify_followers.spool(subs=subs, author=instance.author, extra_context=extra_context)

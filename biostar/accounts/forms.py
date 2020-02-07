@@ -63,6 +63,7 @@ class SignUpForm(forms.Form):
         name = email.split("@")[0]
         user = User.objects.create(email=email, first_name=name)
         user.set_password(password)
+        user.save()
 
         # Send
         auth.send_verification_email(user=user)
@@ -92,9 +93,9 @@ def validate_tags(tags):
 
 
 class EditProfile(forms.Form):
-    email = forms.CharField(label='Email', max_length=100)
-    name = forms.CharField(label='Name', max_length=100)
-    username = forms.CharField(label="Handler", max_length=100)
+    name = forms.CharField(label='Name', max_length=100, required=True)
+    email = forms.CharField(label='Email', max_length=100, required=True)
+    username = forms.CharField(label="Handler", max_length=100, required=True)
     location = forms.CharField(label="Location", max_length=100, required=False)
     website = forms.URLField(label="Website", max_length=225, required=False)
     twitter = forms.CharField(label="Twitter Id", max_length=100, required=False)
@@ -111,7 +112,7 @@ class EditProfile(forms.Form):
                               Add a tag by typing a word then adding a comma or press ENTER or SPACE.
                               """, widget=forms.HiddenInput())
     watched_tags = forms.CharField(label="Watched tags", max_length=50, required=False,
-                              help_text="""
+                                   help_text="""
                               Add a tag by typing a word then adding a comma or press ENTER or SPACE.
                               """, widget=forms.HiddenInput())
 
@@ -120,16 +121,6 @@ class EditProfile(forms.Form):
         self.user = user
 
         super(EditProfile, self).__init__(*args, **kwargs)
-
-    def clean_email(self):
-
-        data = self.cleaned_data['email']
-        email = User.objects.exclude(pk=self.user.pk).filter(email=data)
-
-        if email.exists():
-            raise forms.ValidationError("This email is already being used.")
-
-        return data
 
     def clean_username(self):
 
@@ -142,6 +133,18 @@ class EditProfile(forms.Form):
             raise forms.ValidationError("This handler is already being used.")
 
         return data
+
+    def clean_email(self):
+        cleaned_data = self.cleaned_data['email']
+        email = User.objects.filter(email=cleaned_data).exclude(pk=self.user.pk).first()
+
+        if email:
+            raise forms.ValidationError("Email already exists.")
+
+        if self.user.is_superuser and cleaned_data != self.user.email:
+            raise forms.ValidationError("Admins are required to change emails using the Django Admin Interface.")
+
+        return cleaned_data
 
     def clean_my_tags(self):
         my_tags = self.cleaned_data['my_tags']
@@ -164,14 +167,14 @@ class LoginForm(forms.Form):
 class UserModerate(forms.Form):
 
     CHOICES = [
-        (Profile.NEW, "Reinstate as new user"),
-        (Profile.TRUSTED, "Reinstate as trusted user"),
+        (Profile.SPAMMER, 'Report as spammer'),
         (Profile.BANNED, "Ban user"),
-        (Profile.DEACTIVATED, "Deactivate user"),
-        (Profile.SUSPENDED, "Suspend user")
+        (Profile.SUSPENDED, "Suspend user"),
+        (Profile.NEW, "Reinstate as new user"),
+        (Profile.TRUSTED, "Reinstate as trusted user")
     ]
 
-    action = forms.IntegerField(widget=forms.RadioSelect(choices=CHOICES), label="Select Action")
+    action = forms.IntegerField(widget=forms.RadioSelect(choices=CHOICES), required=False, label="Select Action")
 
     def __init__(self, source, target, request, *args, **kwargs):
         self.source = source
@@ -182,8 +185,9 @@ class UserModerate(forms.Form):
     def clean(self):
         cleaned_data = super(UserModerate, self).clean()
         action = cleaned_data['action']
+
         if not self.source.profile.is_moderator:
-            forms.ValidationError("You need to be a moderator to perform that action")
+            raise forms.ValidationError("You need to be a moderator to perform that action")
 
         if action == Profile.BANNED and not self.source.is_superuser:
             raise forms.ValidationError("You need to be an admin to ban users.")

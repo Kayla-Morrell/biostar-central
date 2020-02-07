@@ -1,11 +1,23 @@
 import logging
-from django.test import TestCase
+import os
+import shutil
+from django.core import management
 from django.urls import reverse
-from biostar.forum import models, views, auth, ajax
-from biostar.forum.tests.util import fake_request
+from django.test import TestCase, override_settings
+from django.conf import settings
+from biostar.forum import models, views, search, tasks
+from biostar.utils.helpers import fake_request
 from biostar.accounts.models import User
 
 logger = logging.getLogger('engine')
+
+__MODULE_DIR = os.path.dirname(models.__file__)
+TEST_ROOT = os.path.join(__MODULE_DIR, 'tests')
+TEST_DATABASE_NAME = f"test_{settings.DATABASES}"
+TEST_INDEX_DIR = os.path.join(TEST_ROOT, "index")
+TEST_INDEX_NAME = "test"
+TEST_DEBUG = True
+
 
 
 class PostTest(TestCase):
@@ -13,6 +25,8 @@ class PostTest(TestCase):
     def setUp(self):
         logger.setLevel(logging.WARNING)
         self.owner = User.objects.create(username=f"test", email="tested@tested.com", password="tested")
+        self.staff_user = User.objects.create(username=f"test2", is_superuser=True, is_staff=True,
+                                              email="tested@staff.com", password="tested")
 
         # Create an existing tested post
         self.post = models.Post.objects.create(title="Test", author=self.owner, content="Test",
@@ -36,16 +50,16 @@ class PostTest(TestCase):
         response = views.new_post(request=request)
         #self.process_response(response=response)
 
-    def test_comment(self):
-        """Test adding comment using POST request"""
+    def test_user_create_task(self):
+        """
+        Test task used to create user awards
+        """
 
-        data = {"parent_uid": self.post.uid, "content": "tested content for a question"}
-        url = reverse('create_comment', kwargs=dict(uid=self.post.uid))
+        self.owner.profile.text = "TESTING" * 1000
+        self.owner.profile.score = 1000
+        self.owner.profile.save()
+        tasks.create_user_awards(self.owner.id)
 
-        request = fake_request(url=url, data=data, user=self.owner)
-        response = views.new_comment(request=request, uid=self.post.uid)
-
-        self.assertEqual(response.status_code, 302, f"Could not add comments")
 
     def test_comment_traversal(self):
         """Test comment rendering pages"""
@@ -67,38 +81,7 @@ class PostTest(TestCase):
 
         self.assertTrue(response.status_code == 200, 'Error rendering comments')
 
-    def test_ajax_subs(self):
-
-        for stype in ["unfollow", "messages", "email", "all", "default"]:
-
-            data = {"sub_type": stype, "root_uid": self.post.uid}
-            request = fake_request(url=reverse('vote'), data=data, user=self.owner)
-            response = ajax.ajax_subs(request)
-            self.assertEqual(response.status_code, 200, f"Could not preform subscription action:{stype}.")
-
-    def preform_votes(self, post, user):
-        for vtype in ["upvote", "bookmark", "accept"]:
-
-            data = {"vote_type": vtype, "post_uid": post.uid}
-            request = fake_request(url=reverse('vote'), data=data, user=user)
-            response = ajax.ajax_vote(request)
-            self.assertEqual(response.status_code, 200, f"Could not preform vote:{vtype}.")
-
-    def test_ajax_vote(self):
-        """Test the ajax voting using POST request """
-        # Create a different user to vote with
-        user2 = User.objects.create(username="user", email="user@tested.com", password="tested")
-
-        answer = models.Post.objects.create(title="answer", author=user2, content="tested foo bar too for",
-                                  type=models.Post.ANSWER, parent=self.post)
-
-        self.preform_votes(post=answer, user=self.owner)
-        self.preform_votes(post=self.post, user=self.owner)
-        self.preform_votes(post=self.post, user=user2)
-
-        return
-
-    def test_edit_post(self):
+    def Xtest_edit_post(self):
         """
         Test post edit for root and descendants
         """
@@ -124,8 +107,13 @@ class PostTest(TestCase):
         data = dict(content="testing answer", parent_uid=self.post.uid)
         request = fake_request(url=url, data=data, user=self.owner)
         response = views.post_view(request=request, uid=self.post.uid)
-        #self.process_response(response)
         return
+
+    @override_settings(DEBUG=TEST_DEBUG)
+    def test_populate(self):
+        "Test forum populating "
+
+        management.call_command('populate', n_users=10, n_messages=10, n_votes=10, n_posts=10)
 
     def test_markdown(self):
         "Test the markdown rendering"
@@ -140,4 +128,56 @@ class PostTest(TestCase):
                          f"Could not redirect :\nresponse:{response}")
 
 
+@override_settings(INDEX_DIR=TEST_INDEX_DIR, INDEX_NAME=TEST_INDEX_NAME, DATABASE_NAME=TEST_DATABASE_NAME)
+class PostSearchTest(TestCase):
 
+    def setUp(self):
+        self.owner = User.objects.create(username=f"test", email="tested@tested.com", password="tested")
+
+        # Delete test search index on each start up.
+        if os.path.exists(TEST_INDEX_DIR):
+            shutil.rmtree(TEST_INDEX_DIR)
+
+        # Create some posts to index.
+        self.limit = 10
+        for p in range(self.limit):
+            # Create an existing tested post
+            self.post = models.Post.objects.create(title=f"Test post-{p} ", author=self.owner,
+                                                   content=f"Test post-{p} ",
+                                                   type=models.Post.QUESTION)
+        self.owner.save()
+
+        # Crawl through posts and create test index.
+        search.crawl(reindex=True, overwrite=True, limit=1000)
+
+        # There should not be any more unidexed posts.
+        unindexed_posts = models.Post.objects.filter(indexed=False).exists()
+
+        self.assertFalse(unindexed_posts, "Posts not correctly indexed.")
+
+    def test_search_view(self):
+        """
+        Test search view
+        """
+
+        url = reverse("post_search")
+
+        # Get form data
+        data = dict(query="Test post")
+        request = fake_request(url=url, data=data, method="GET", user=self.owner)
+
+        # Preform search on test index
+        response = views.post_search(request=request)
+
+        self.assertEqual(response.status_code, 200, "Error preforming search.")
+
+    def test_search_funcs(self):
+        """
+        Test functions associated with search.
+        """
+        query = "Test"
+        whoosh_search = search.preform_search(query)
+
+        search.print_info()
+
+        self.assertTrue(len(whoosh_search), f"Whoosh search returned no results. At least {self.limit} expected")

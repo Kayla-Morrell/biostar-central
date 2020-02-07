@@ -1,15 +1,16 @@
 import datetime
 import logging
-
+import hashlib
+import urllib.parse
 from django.template import loader
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth import get_user_model
 from django.db import transaction
-from django.db.models import F
+from django.db.models import F, Q
 from django.utils.timezone import utc
-
-from biostar.accounts.models import Profile
+from django.core.cache import cache
+from biostar.accounts.models import Profile, Logger
 from . import util
 from .const import *
 from .models import Post, Vote, PostView, Subscription
@@ -35,6 +36,80 @@ def get_votes(user, root):
     return store
 
 
+def gravatar_url(email, style='mp', size=80):
+    hash_num = hashlib.md5(email).hexdigest()
+
+    url = "https://secure.gravatar.com/avatar/%s?" % hash_num
+    url += urllib.parse.urlencode({
+        's': str(size),
+        'd': style,
+    }
+    )
+    return url
+
+
+def get_users_str():
+    """
+    Return comma separated string of username used for autocomplete
+    """
+
+    cache_days = 5
+    cache_secs = 60 * 60 * 24 * cache_days
+
+    users_str = cache.get(USERS_CACHE_KEY)
+    if users_str is None:
+        users_str = ','.join(User.objects.all().values_list('username', flat=True))
+        cache.set(USERS_CACHE_KEY, users_str, cache_secs)
+
+    return users_str
+
+
+
+def gravatar(user, size=80):
+    if not user or user.is_anonymous:
+        email = 'anon@biostars.org'.encode('utf8')
+        return gravatar_url(email=email)
+
+    email = user.email if user.is_authenticated else ''
+    email = email.encode('utf8')
+
+    if user.is_anonymous or not user.profile.is_valid:
+        # Removes spammy images for suspended users
+        email = 'suspended@biostars.org'.encode('utf8')
+
+        style = settings.GRAVATAR_ICON or "monsterid"
+    elif user.profile.is_moderator:
+        style = settings.GRAVATAR_ICON or "robohash"
+    elif user.profile.score > 100:
+        style = settings.GRAVATAR_ICON or "retro"
+    elif user.profile.score > 0:
+        style = settings.GRAVATAR_ICON or "identicon"
+    else:
+        style = settings.GRAVATAR_ICON or "mp"
+
+    return gravatar_url(email=email, style=style, size=size)
+
+
+def walk_down_thread(parent, collect=set()):
+    """
+    Recursively walk down a thread of posts starting from target
+    """
+
+    # Stop condition: post does not have a root or parent.
+    if (parent is None) or (parent.parent is None) or (parent.root is None):
+        return collect
+
+    # Get all children for this post, excluding itself.
+    children = Post.objects.filter(parent=parent).exclude(uid=parent.uid)
+
+    for child in children:
+        # Add child to list
+        collect.add(child)
+        # Get all children belonging to the current child.
+        walk_down_thread(parent=child, collect=collect)
+
+    return collect
+
 
 def create_subscription(post, user, sub_type=None, delete_exisiting=True):
     """
@@ -58,7 +133,10 @@ def create_subscription(post, user, sub_type=None, delete_exisiting=True):
 
 
 def is_suspended(user):
-    return user.is_authenticated and user.profile.state in (Profile.BANNED, Profile.SUSPENDED)
+    if user.is_authenticated and user.profile.state in (Profile.BANNED, Profile.SUSPENDED, Profile.SPAMMER):
+        return True
+
+    return False
 
 
 def post_tree(user, root):
@@ -71,15 +149,14 @@ def post_tree(user, root):
     # Get all posts that belong to post root.
     query = Post.objects.filter(root=root).exclude(pk=root.id)
 
-    # Add all related objects.
-    query = query.select_related("lastedit_user__profile", "lastedit_user", "root__lastedit_user",
-                                 "root__lastedit_user__profile", "root__author__profile", "author__profile")
+    query = query.select_related("lastedit_user__profile", "author__profile", "root__author__profile")
 
     is_moderator = user.is_authenticated and user.profile.is_moderator
 
     # Only moderators
     if not is_moderator:
         query = query.exclude(status=Post.DELETED)
+        # query = query.exclude(spam=Post.SPAM)
 
     # Apply the sort order to all posts in thread.
     thread = query.order_by("type", "-accept_count", "-vote_count", "creation_date")
@@ -111,9 +188,9 @@ def post_tree(user, root):
     root = decorate(root)
 
     # Select the answers from the thread.
-    answers = [ p for p in thread if p.type==Post.ANSWER ]
+    answers = [p for p in thread if p.type == Post.ANSWER]
 
-    return root, comment_tree,  answers, thread
+    return root, comment_tree, answers, thread
 
 
 def update_post_views(post, request, minutes=settings.POST_VIEW_MINUTES):
@@ -140,7 +217,6 @@ def update_post_views(post, request, minutes=settings.POST_VIEW_MINUTES):
 
 @transaction.atomic
 def apply_vote(post, user, vote_type):
-
     vote = Vote.objects.filter(author=user, post=post, type=vote_type).first()
 
     if vote:
@@ -186,6 +262,12 @@ def apply_vote(post, user, vote_type):
     return msg, vote, change
 
 
+def log_action(user=None, action=Logger.MODERATING, log_text=''):
+    # Create a logger object
+    Logger.objects.create(user=user, action=action, log_text=log_text)
+    return
+
+
 def delete_post(post, request):
     # Delete marks a post deleted but does not remove it.
 
@@ -216,7 +298,24 @@ def delete_post(post, request):
     reply_count = Post.objects.filter(root=post.root).count()
 
     Post.objects.filter(pk=post.root.id).update(reply_count=reply_count)
+    log_action(user=request.user, log_text=f"Deleted post={post.uid}")
 
+    return url
+
+
+def handle_spam_post(post, user):
+    url = post.get_absolute_url()
+
+    # # Ban new users that post spam.
+    # if post.author.profile.low_rep:
+    #     post.author.profile.state = Profile.BANNED
+
+    post.author.profile.state = Profile.SPAMMER
+    post.author.profile.save()
+
+    # Label all posts by this users as spam.
+    Post.objects.filter(author=post.author).update(spam=Post.SPAM)
+    log_action(user=user, log_text=f"Reported post={post.uid} as spam.")
     return url
 
 
@@ -229,11 +328,13 @@ def moderate_post(request, action, post, offtopic='', comment=None, dupes=[], pi
     if action == BUMP_POST:
         Post.objects.filter(uid=post.uid).update(lastedit_date=now, rank=now.timestamp(), last_contributor=request.user)
         messages.success(request, "Post bumped")
+        log_action(user=user, log_text=f"Bumped post={post.uid}")
         return url
 
     if action == OPEN_POST:
-        Post.objects.filter(uid=post.uid).update(status=Post.OPEN)
+        Post.objects.filter(uid=post.uid).update(status=Post.OPEN, spam=Post.NOT_SPAM)
         messages.success(request, f"Opened post: {post.title}")
+        log_action(user=user, log_text=f"Opened post={post.uid}")
         return url
 
     if action == DELETE:
@@ -241,40 +342,43 @@ def moderate_post(request, action, post, offtopic='', comment=None, dupes=[], pi
 
     if action == MOVE_ANSWER:
         Post.objects.filter(uid=post.uid).update(type=Post.ANSWER)
+        log_action(user=user, log_text=f"Moved post={post.uid} to answer. ")
         return url
+
+    if action == REPORT_SPAM:
+        return handle_spam_post(post=post, user=user)
 
     if pid:
         parent = Post.objects.filter(uid=pid).first() or post.root
         Post.objects.filter(uid=post.uid).update(type=Post.COMMENT, parent=parent)
         Post.objects.filter(uid=root.uid).update(reply_count=F("answer_count") - 1)
         messages.success(request, "Moved answer to comment")
+        log_action(user=user, log_text=f"Moved post={post.uid} to comment.")
         return url
 
-    if offtopic:
-        # Load comment explaining post closure.
-        tmpl = loader.get_template("messages/off_topic.md")
-        context = dict(user=post.author, comment=offtopic)
-        content = tmpl.render(context)
-
-        Post.objects.filter(uid=post.uid).update(status=Post.OFFTOPIC)
-        # Load answer explaining post being off topic.
-        post = Post.objects.create(content=content, type=Post.ANSWER, parent=post, author=user)
-        url = post.get_absolute_url()
-        messages.success(request, "Marked the post as off topic.")
-
-        return url
-
-    if dupes:
+    if dupes and len(''.join(dupes)):
         # Load comment explaining post off topic label.
         tmpl = loader.get_template("messages/duplicate_posts.md")
         context = dict(user=post.author, dupes=dupes, comment=comment)
         content = tmpl.render(context)
 
-        Post.objects.filter(uid=post.uid).update(status=Post.OFFTOPIC)
-        post = Post.objects.create(content=content, type=Post.COMMENT, parent=post, author=user)
+        post = Post.objects.create(content=content, type=Post.ANSWER, parent=post, root=post.root, author=user)
         url = post.get_absolute_url()
-        messages.success(request, "Closed duplicated post.")
+        messages.success(request, "Marked duplicated post as off topic.")
+        log_action(user=user, log_text=f"Marked post={post.uid} as duplicate.")
+        return url
 
+    if comment:
+        # Load comment explaining post closure.
+        tmpl = loader.get_template("messages/off_topic.md")
+        context = dict(user=post.author, comment=comment)
+        content = tmpl.render(context)
+
+        # Load answer explaining post being off topic.
+        post = Post.objects.create(content=content, type=Post.ANSWER, parent=post, root=post.root, author=user)
+        url = post.get_absolute_url()
+        messages.success(request, "Marked the post as off topic.")
+        log_action(user=user, log_text=f"Marked post={post.uid} as off topic.")
         return url
 
     return url

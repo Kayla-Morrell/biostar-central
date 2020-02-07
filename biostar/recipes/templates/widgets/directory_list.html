@@ -1,17 +1,17 @@
 {% load engine_tags %}
 
 {% if paths %}
-    <div class="ui relaxed divided large list">
-        {% for  rel_path, dir_names, last_name, tstamp, size, is_image in paths %}
+    <div class="ui relaxed divided list">
+        {% for  rel_path, dir_names, last_name, tstamp, size, is_image, dir_name in paths %}
 
             <div class="item">
-
 
                 <a href="{% url serve_url uid=obj.uid path=rel_path %}">
 
                     {% if is_image %}
                         <img class="ui small middle aligned image" src="{% url serve_url  uid=obj.uid path=rel_path %}">
                     {% endif %}
+
                     {% for dname in dir_names %}
                         <span class="dirname">{{ dname }}</span> /
                     {% endfor %}
@@ -27,8 +27,6 @@
                 {% endif %}
 
                 <span class="ui right floated small label">{{ size|filesizeformat }}</span>
-
-
 
 
             </div>

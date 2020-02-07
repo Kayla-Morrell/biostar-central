@@ -3,8 +3,10 @@ import itertools
 import logging
 import random
 import re
+import os
 import urllib.parse
 import datetime
+from itertools import count, islice
 from datetime import timedelta
 
 from snowpenguin.django.recaptcha2.fields import ReCaptchaField
@@ -21,7 +23,7 @@ from django.utils.safestring import mark_safe
 from django.utils.timezone import utc
 
 from biostar.accounts.models import Profile, Message
-from biostar.forum import const
+from biostar.forum import const, auth
 from biostar.forum.models import Post, Vote, Award, Subscription
 
 User = get_user_model()
@@ -33,7 +35,7 @@ register = template.Library()
 ICON_MAP = dict(
     rank="list ol icon",
     views="eye icon",
-    replies="comment icon",
+    replies="comments icon",
     votes="thumbs up icon",
     all='calendar plus icon',
     today='clock icon',
@@ -61,18 +63,8 @@ def get_count(request, key, default=0):
 
 @register.simple_tag(takes_context=True)
 def activate(context, state, target):
-    label = "active" if state == target else ""
-    request = context['request']
-    value = 0
-
-    # Special casing a few targets to generate an extra css class.
-    if target == "messages":
-        value = get_count(request, "message_count")
-    elif target == "votes":
-        value = get_count(request, "vote_count")
-
-    # Generate a broader css if necessary.
-    label = f"new {label}" if value else label
+    targets = target.split(',')
+    label = "active" if state in targets else ""
 
     return label
 
@@ -92,25 +84,39 @@ def bignum(number):
 
 
 @register.simple_tag(takes_context=True)
-def count_label(context, label):
+def counts(context):
+
     request = context['request']
-    count = get_count(request, label)
-    label = f"({count})" if count else ""
-    return label
+    vcounts = get_count(request, 'vote_count') or 0
+    mcounts = get_count(request, 'message_count') or 0
+    votes = dict(count=vcounts)
+    messages = dict(count=mcounts)
+
+    return dict(votes=votes, messages=messages)
 
 
-@register.inclusion_tag('widgets/inplace_form.html')
-def inplace_form(post, width='100%'):
-    pad = 4 if post.type == Post.COMMENT else 7
-    rows = len(post.content.split("\n")) + pad
-    context = dict(post=post, width=width, rows=rows)
+@register.inclusion_tag('widgets/post_user_line_search.html')
+def post_search_line(result, avatar=True):
+    return dict(post=result, avatar=avatar)
+
+
+@register.inclusion_tag('widgets/pages_search.html', takes_context=True)
+def pages_search(context, results):
+
+    previous_page = results.pagenum - 1
+    next_page = results.pagenum + 1 if not results.is_last_page() else results.pagenum
+    request = context['request']
+    query = request.GET.get('query', '')
+    context = dict(results=results, previous_page=previous_page, query=query,
+                   next_page=next_page)
+
     return context
 
 
-@register.inclusion_tag('widgets/post_user_line.html')
-def post_search_line(post_uid, avatar=True):
-    post = Post.objects.filter(uid=post_uid).first()
-    return dict(post=post, avatar=avatar)
+@register.simple_tag
+def post_type_display(post_type):
+    mapper = dict(Post.TYPE_CHOICES)
+    return mapper.get(post_type)
 
 
 def now():
@@ -118,92 +124,107 @@ def now():
 
 
 @register.simple_tag
-def gravatar(user, size=80):
-    email = user.email if user.is_authenticated else ''
-    email = email.encode('utf8')
+def gravatar(user=None, user_uid=None, size=80):
+    hasattr(user, 'profile')
+    if user_uid and hasattr(user, 'profile'):
+        user = User.objects.filter(profile__uid=user_uid).first()
 
-    if user.is_anonymous or user.profile.is_suspended or user.profile.is_banned:
-        # Removes spammy images for suspended users
-        email = 'suspended@biostars.org'.encode('utf8')
-        style = settings.GRAVATAR_ICON or "monsterid"
-    elif user.profile.is_moderator:
-        style = settings.GRAVATAR_ICON or "robohash"
-    elif user.profile.score > 100:
-        style = settings.GRAVATAR_ICON or "retro"
-    elif user.profile.score > 0:
-        style = settings.GRAVATAR_ICON or "identicon"
-    else:
-        style = settings.GRAVATAR_ICON or "mp"
-
-    hash = hashlib.md5(email).hexdigest()
-
-    gravatar_url = "https://secure.gravatar.com/avatar/%s?" % hash
-    gravatar_url += urllib.parse.urlencode({
-        's': str(size),
-        'd': style,
-    }
-    )
-    return gravatar_url
+    return auth.gravatar(user=user, size=size)
 
 
-@register.simple_tag()
-def user_score(user):
-    score = user.profile.score * 10
-    return score
+@register.inclusion_tag('widgets/filter_dropdown.html', takes_context=True)
+def filter_dropdown(context):
 
+    return context
 
-@register.inclusion_tag('widgets/user_icon.html')
-def user_icon(user=None, user_uid=None):
-    try:
-        user = user or User.objects.filter(profile__uid=user_uid).first()
-        score = user_score(user)
-    except Exception as exc:
-        logger.info(exc)
-        user = score = None
+@register.inclusion_tag('widgets/user_filter_dropdown.html', takes_context=True)
+def user_filter_dropdown(context):
 
-    context = dict(user=user, score=score)
     return context
 
 
-@register.inclusion_tag('widgets/post_user_line.html')
-def post_user_line(post, avatar=False, user_info=True):
-    return dict(post=post, avatar=avatar, user_info=user_info)
+@register.inclusion_tag('widgets/user_icon.html', takes_context=True)
+def user_icon(context, user=None, is_moderator=False, is_spammer=False, score=0):
 
-@register.inclusion_tag('widgets/post_user_line.html')
-def postuid_user_line(uid, avatar=True, user_info=True):
+    try:
+        is_moderator = user.profile.is_moderator if user else is_moderator
+        score = user.profile.get_score() if user else score * 10
+        is_spammer = user.profile.is_spammer if user else is_spammer
+    except Exception as exc:
+        logger.info(exc)
+
+    context.update(dict(is_moderator=is_moderator, is_spammer=is_spammer, score=score))
+    return context
+
+
+@register.simple_tag()
+def user_icon_css(user=None):
+    css = ''
+    if user and user.is_authenticated:
+
+        if user.profile.is_moderator:
+            css = "bolt icon"
+        elif user.profile.score > 1000:
+            css = "user icon"
+        else:
+            css = "user outline icon"
+
+    return css
+
+
+@register.inclusion_tag('widgets/post_user_line.html', takes_context=True)
+def post_user_line(context, post, avatar=False, user_info=True):
+    context.update(dict(post=post, avatar=avatar, user_info=user_info))
+    return context
+
+
+@register.inclusion_tag('widgets/post_user_line.html', takes_context=True)
+def postuid_user_line(context, uid, avatar=True, user_info=True):
     post = Post.objects.filter(uid=uid).first()
-    return dict(post=post, avatar=avatar, user_info=user_info)
+
+    context.update(dict(post=post, avatar=avatar, user_info=user_info))
+    return context
 
 
-@register.inclusion_tag('widgets/user_card.html')
-def user_card(user):
-    return dict(user=user)
+@register.inclusion_tag('widgets/user_card.html', takes_context=True)
+def user_card(context, target):
+    context.update(dict(target=target))
+    return context
 
 
-@register.inclusion_tag('widgets/post_user_box.html')
-def post_user_box(user, post):
-    return dict(user=user, post=post)
+@register.inclusion_tag('widgets/post_user_box.html', takes_context=True)
+def post_user_box(context, target_user):
+
+    context.update(dict(target_user=target_user))
+    return context
 
 
 @register.inclusion_tag('widgets/post_actions.html', takes_context=True)
-def post_actions(context, post, label="ADD COMMENT", avatar=False):
+def post_actions(context, post, label="ADD COMMENT", author=None, lastedit_user=None, avatar=False):
     request = context["request"]
 
-    return dict(post=post, user=request.user,
+    return dict(post=post, user=request.user, author=author, lastedit_user=lastedit_user,
                 label=label, request=request, avatar=avatar)
 
 
 @register.inclusion_tag('widgets/post_tags.html')
-def post_tags(post, show_views=False, spaced=True):
-    tags = post.tag_val.split(",")
+def post_tags(post=None, post_uid=None, show_views=False, tags_str='', spaced=True):
+
+    if post_uid:
+        post = Post.objects.filter(uid=post_uid).first()
+
+    tags = tags_str.split(",") if tags_str else ''
+    tags = post.tag_val.split(",") if post else tags
+
     return dict(post=post, tags=tags, show_views=show_views, spaced=spaced)
 
 
 @register.inclusion_tag('widgets/pages.html', takes_context=True)
-def pages(context, objs):
+def pages(context, objs, show_step=True):
     request = context["request"]
     url = request.path
-    return dict(objs=objs, url=url, request=request)
+
+    return dict(objs=objs, url=url, show_step=show_step, request=request)
 
 
 @register.simple_tag
@@ -295,38 +316,48 @@ def inplace_type_field(post=None, field_id='type'):
     return mark_safe(post_type)
 
 
-@register.simple_tag
-def get_tags(request=None, post=None, user=None, watched=False):
-    # Get tags in requests before fetching ones in the post.
-    # This is done to accommodate populating tags in forms
+def read_tags(filepath, exclude=[], limit=500):
+    """Read tags from a file. Each line is considered a tag. """
+    stream = open(filepath, 'r') if os.path.exists(filepath) else []
+    stream = islice(zip(count(1), stream), limit)
+    tags_opts = set()
+    for idx, line in stream:
+        line = line.strip()
+        if line not in exclude or line != '\n':
+            tags_opts.add((line, False) )
+    return tags_opts
 
-    if request:
-        tags = request.GET.get('tag_val', request.POST.get('tag_val', ''))
+
+def get_dropdown_options(selected_list):
+    tags_file = getattr(settings, "TAGS_OPTIONS_FILE", None)
+    # Read tags file from a file if it is set
+    selected_tags = {(val, True) for val in selected_list}
+    if tags_file:
+        tags_opts = read_tags(filepath=tags_file, exclude=selected_list)
     else:
-        tags = post.tag_val if isinstance(post, Post) else ''
-        tags = user.profile.my_tags if user else tags
-        tags = user.profile.watched_tags if watched else tags
+        tags_query = Tag.objects.exclude(name__in=selected_list)[:50].values_list("name", flat=True)
+        tags_opts = {(name.strip(), False) for name in tags_query}
+    # Chain the selected and rest of the options
+    tags_opts = itertools.chain(selected_tags, tags_opts)
 
-    # Prepare the tags options in the dropdown from a file
-    if settings.TAGS_OPTIONS_FILE:
-        tags_opts = open(settings.TAGS_OPTIONS_FILE, 'r').readlines()
-        tags_opts = [(x, False) if x not in tags.split(",") else (x, True) for x in tags_opts]
-    # Prepare dropdown options from database.
-    else:
-        query = Count('post')
-        tags_query = Tag.objects.annotate(count=query).order_by('-count').exclude(name__in=tags.split(','))[:50]
-        tags_opts = ((tag.name.strip(), False) for tag in tags_query)
+    return tags_opts
 
-    selected_tags_opt = ((val, True) for val in tags.split(","))
-    tags_opts = itertools.chain(selected_tags_opt, tags_opts)
 
-    context = dict(selected=tags, tags_opt=tags_opts)
+@register.inclusion_tag('forms/tags_field.html', takes_context=True)
+def tags_field(context, form_field, initial=''):
+    """Render multiple select dropdown options for tags. """
+
+    # Get currently selected tags from the post or request
+    selected_list = initial.split(",") if initial else []
+    dropdown_options = get_dropdown_options(selected_list=selected_list)
+
+    context = dict(initial=initial, form_field=form_field, dropdown_options=dropdown_options)
 
     return context
 
 
 @register.inclusion_tag('widgets/form_errors.html')
-def form_errors(form):
+def form_errors(form, wmd_prefix='', override_content=False):
     """
     Turns form errors into a data structure
     """
@@ -335,7 +366,10 @@ def form_errors(form):
         errorlist = [('', message) for message in form.non_field_errors()]
         for field in form:
             for error in field.errors:
-                errorlist.append((f'{field.name}:', error, field.id_for_label))
+                # wmd_prefix is required when dealing with 'content' field.
+                field_id = wmd_prefix if (override_content and field.name is 'content') else field.id_for_label
+                errorlist.append((f'{field.name}:', error, field_id))
+
     except Exception as exc:
         errorlist = []
         logging.error(exc)
@@ -390,11 +424,11 @@ def custom_feed(objs, feed_type='', title=''):
 
 
 @register.inclusion_tag(takes_context=True, filename='widgets/search_bar.html')
-def search_bar(context, search_url='', tags=False, users=False, ajax_results=True, extra_css='', redir=False):
-    search_url = search_url or reverse('ajax_search')
-    redir = '1' if redir else '0'
-    context = dict(search_url=search_url, tags=tags, users=users, extra_css=extra_css,
-                   ajax_results=ajax_results, redir=redir)
+def search_bar(context, tags=False, users=False):
+    search_url = reverse('tags_list') if tags else reverse('community_list') if users else reverse('post_search')
+    request = context['request']
+    value = request.GET.get('query', '')
+    context = dict(search_url=search_url, value=value)
 
     return context
 
@@ -403,14 +437,19 @@ def search_bar(context, search_url='', tags=False, users=False, ajax_results=Tru
 def list_posts(context, target):
     request = context["request"]
     user = request.user
+
     posts = Post.objects.filter(author=target)
+
     page = request.GET.get('page', 1)
-    posts = posts.prefetch_related("root", "author__profile",
-                                   "lastedit_user__profile", "thread_users__profile")
-    # Filter deleted items for anonymous and non-moderators.
+    posts = posts.select_related("root").prefetch_related("author__profile", "lastedit_user__profile")
+
+    # Filter deleted items or spam items for anonymous and non-moderators.
     if user.is_anonymous or (user.is_authenticated and not user.profile.is_moderator):
         posts = posts.exclude(status=Post.DELETED)
+        posts = posts.exclude(spam=Post.SPAM)
+
     posts = posts.order_by("-rank")
+    posts = posts.exclude(Q(root=None) | Q(parent=None))
     # Create the paginator and apply post paging
     paginator = Paginator(posts, settings.POSTS_PER_PAGE)
     posts = paginator.get_page(page)
@@ -425,23 +464,38 @@ def default_feed(user):
     recent_votes = Vote.objects.prefetch_related("post").exclude(post__status=Post.DELETED)
     recent_votes = recent_votes.order_by("-pk")[:settings.VOTE_FEED_COUNT]
 
-    recent_locations = Profile.objects.exclude(Q(location="") | Q(state__in=[Profile.BANNED, Profile.SUSPENDED]))
+    recent_locations = Profile.objects.exclude(Q(location="") | Q(state__in=[Profile.BANNED, Profile.SUSPENDED])).prefetch_related("user")
     recent_locations = recent_locations.order_by('-last_login')
     recent_locations = recent_locations[:settings.LOCATION_FEED_COUNT]
 
     recent_awards = Award.objects.order_by("-pk").select_related("badge", "user", "user__profile")
     recent_awards = recent_awards.exclude(user__profile__state__in=[Profile.BANNED, Profile.SUSPENDED])
     recent_awards = recent_awards[:settings.AWARDS_FEED_COUNT]
-
+    #
     recent_replies = Post.objects.filter(type__in=[Post.COMMENT, Post.ANSWER]).exclude(status=Post.DELETED)
     recent_replies = recent_replies.select_related("author__profile", "author")
     recent_replies = recent_replies.order_by("-pk")[:settings.REPLIES_FEED_COUNT]
 
-    context = dict(recent_votes=recent_votes, recent_awards=recent_awards,
+    #
+    # users = [dict(username=u.user.username, email=u.user.email, uid=u.uid, name=u.name,
+    #               url=u.get_absolute_url(), score=u.score,
+    #               gravatar=auth.gravatar(user=u.user, size=30))
+    #          for u in recent_locations]
+
+    context = dict(recent_votes=recent_votes, recent_awards=recent_awards, users=[],
                    recent_locations=recent_locations, recent_replies=recent_replies,
                    user=user)
+
     return context
 
+
+@register.simple_tag
+def planet_gravatar(planet_author):
+
+    email = planet_author.replace(' ', '')
+    email = f"{email}@planet.org"
+    email = email.encode('utf-8')
+    return auth.gravatar_url(email=email, style='retro')
 
 @register.simple_tag
 def get_icon(string, default=""):
@@ -463,7 +517,8 @@ def get_digest_icon(user):
 @register.inclusion_tag('widgets/list_awards.html', takes_context=True)
 def list_awards(context, target):
     request = context['request']
-    awards = Award.objects.filter(user=target).order_by("-date")
+    awards = Award.objects.filter(user=target).select_related('post', 'post__root', 'user', 'user__profile',
+                                                              'badge').order_by("-date")
     page = request.GET.get('page', 1)
     # Create the paginator
     paginator = Paginator(awards, 20)
@@ -528,31 +583,24 @@ def relative_url(value, field_name, urlencode=None):
 
 
 @register.simple_tag
-def get_thread_users(post, limit=2):
-    thread_users = post.thread_users.all()
-    stream = itertools.islice(thread_users, limit)
+def get_thread_users(users, post, limit=2):
 
-    if not settings.ADD_THREAD_USERS:
-        return []
+    displayed_users = {post.author, post.lastedit_user or post.author}
 
-    # Author is shown first
-    users = {post.author, post.lastedit_user}
-    for user in stream:
-        if len(users) >= limit:
+    for user in users:
+        if len(displayed_users) >= limit:
             break
-        if user in users:
+        if user in displayed_users:
             continue
-        users.add(user)
 
-    users = filter(lambda u: not (u.profile.is_banned or u.profile.is_suspended), users)
+        displayed_users.add(user)
 
-    return users
+    return displayed_users
 
 
 @register.inclusion_tag('widgets/listing.html', takes_context=True)
 def listing(context, posts=None, show_subs=True):
     request = context["request"]
-
     return dict(posts=posts, request=request, show_subs=show_subs)
 
 
@@ -626,33 +674,43 @@ def bignum(number):
         pass
     return str(number)
 
+def post_boxclass(root_type, answer_count, root_has_accepted):
 
-@register.simple_tag
-def boxclass(post):
     # Create the css class for each row
-
-    if post.root.type == Post.JOB:
+    if root_type == Post.JOB:
         style = "job"
-    elif post.root.type == Post.TUTORIAL:
+    elif root_type == Post.TUTORIAL:
         style = "tutorial"
-    elif post.root.type == Post.TOOL:
+    elif root_type == Post.TOOL:
         style = "tool"
-    elif post.root.type == Post.FORUM:
+    elif root_type == Post.FORUM:
         style = "forum"
-    elif post.root.type == Post.NEWS:
+    elif root_type == Post.NEWS:
         style = "news"
     else:
         style = "question"
 
-    if post.root.answer_count:
+    if isinstance(answer_count, int) and int(answer_count) > 1:
         style += " has_answers"
 
-    if post.root.has_accepted:
-        modifier = "accepted answer" if post.type == Post.QUESTION else "accepted"
+    if root_has_accepted == True:
+        modifier = "accepted answer" if root_type == Post.QUESTION else "accepted"
     else:
         modifier = "open"
 
     return f"{style} {modifier}"
+
+
+@register.simple_tag
+def search_boxclass(root_type, answer_count, root_has_accepted):
+    return post_boxclass(root_type=root_type, answer_count=answer_count, root_has_accepted=root_has_accepted)
+
+
+@register.simple_tag
+def boxclass(post=None, uid=None):
+
+    return post_boxclass(root_type=post.root.type,
+                              answer_count=post.root.answer_count, root_has_accepted=post.root.has_accepted)
 
 
 @register.simple_tag(takes_context=True)
@@ -660,6 +718,7 @@ def render_comments(context, tree, post, template_name='widgets/comment_body.htm
     request = context["request"]
     if post.id in tree:
         text = traverse_comments(request=request, post=post, tree=tree, template_name=template_name)
+
     else:
         text = ''
 
@@ -676,8 +735,9 @@ def traverse_comments(request, post, tree, template_name):
 
         cont = {"post": node, 'user': request.user, 'request': request}
         html = body.render(cont)
-
-        collect.append(f'<div class="indent "><div class="comment">{html}</div>')
+        source = f"indent-{node.uid}"
+        target = f"'{node.uid}'"
+        collect.append(f'<div class="indent " ondragover="allowDrop(event);" ondrop="drop(event, {target}) id="{source}" ><div class="comment">{html}</div>')
 
         for child in tree.get(node.id, []):
             if child in seen:
@@ -692,7 +752,72 @@ def traverse_comments(request, post, tree, template_name):
     for node in tree[post.id]:
         traverse(node, collect=collect)
     collect.append("</div>")
-
     html = '\n'.join(collect)
 
     return html
+
+import bleach
+from biostar.utils import markdown
+
+def top_level_only(attrs, new=False):
+    '''
+    Helper function used when linkifying with bleach.
+    '''
+    if not new:
+        return attrs
+    text = attrs['_text']
+    if not text.startswith(('http:', 'https:')):
+        return None
+    return attrs
+
+@register.simple_tag
+def markdown_file(pattern):
+    """
+    Returns the content of a file matched by the pattern.
+    Returns an error message if the pattern cannot be found.
+    """
+    #path = find_file(pattern=pattern)
+    path = pattern
+    path = os.path.abspath(path)
+    if os.path.isfile(path):
+        text = open(path).read()
+    else:
+        text = f"    file '{pattern}': '{path}' not found"
+
+    try:
+
+        html = markdown.parse(text, sanatize=False, escape=False)
+        html = bleach.linkify(html, callbacks=[top_level_only], skip_tags=['pre'])
+        html = mark_safe(html)
+    except Exception as e:
+        html = f"Markdown rendering exception"
+        logger.error(e)
+    return html
+
+class MarkDownNode(template.Node):
+    CALLBACKS = [ top_level_only ]
+    def __init__(self, nodelist):
+        self.nodelist = nodelist
+
+    def render(self, context):
+        text = self.nodelist.render(context)
+        text = markdown.parse(text)
+        text = bleach.linkify(text, callbacks=self.CALLBACKS, skip_tags=['pre'])
+        return text
+
+@register.tag('markdown')
+def markdown_tag(parser, token):
+    """
+    Enables a block of markdown text to be used in a template.
+    Syntax::
+            {% markdown %}
+            ## Markdown
+            Now you can write markdown in your templates. This is good because:
+            * markdown is awesome
+            * markdown is less verbose than writing html by hand
+            {% endmarkdown %}
+    """
+    nodelist = parser.parse(('endmarkdown',))
+    # need to do this otherwise we get big fail
+    parser.delete_first_token()
+    return MarkDownNode(nodelist)

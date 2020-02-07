@@ -16,6 +16,9 @@ ADMINS = [
     ("Admin User", "admin@localhost")
 ]
 
+# User above this score do not get a reCAPTCHA
+RECAPTCHA_THRESHOLD_USER_SCORE = 1
+
 # The password for admin users. Must be changed in production.
 DEFAULT_ADMIN_PASSWORD = "admin@localhost"
 
@@ -25,8 +28,20 @@ ADMIN_NAME, ADMIN_EMAIL = ADMINS[0]
 # The default sender name on emails.
 DEFAULT_FROM_EMAIL = f"{ADMIN_NAME} <{ADMIN_EMAIL}>"
 
+# User score threshold to be considered low reputation.
+LOW_REP_THRESHOLD = 0
+
+# Users below this threshold are considered to have recently joined.
+RECENTLY_JOINED_DAYS = 30
+
 # In MB
 MAX_UPLOAD_SIZE = 10
+
+# Trusted users upload limit in MB.
+TRUSTED_UPLOAD_SIZE = 500
+
+# Admin users upload limit in MB
+ADMIN_UPLOAD_SIZE = 1000
 
 MESSAGES_PER_PAGE = 5
 

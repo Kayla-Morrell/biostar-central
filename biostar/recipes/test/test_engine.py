@@ -5,12 +5,13 @@ from django.test import TestCase, override_settings
 from django.forms import ValidationError
 from django.core.files import File
 from django.urls import reverse
-from biostar.recipes import models, views, auth, factory, forms
+from biostar.recipes import models, views, auth, factory, forms, const
 from biostar.recipes import util as engine_util
 from django.conf import settings
 
 
-from . import util
+from biostar.utils.helpers import fake_request, get_uuid
+
 TEST_ROOT = os.path.abspath(os.path.join(settings.BASE_DIR, 'export', 'test'))
 
 logger = logging.getLogger('engine')
@@ -28,7 +29,7 @@ class SiteAdminTest(TestCase):
     def setUp(self):
         logger.setLevel(logging.WARNING)
 
-        self.user = models.User.objects.create_superuser(username=f"tested{util.get_uuid(10)}", email="tested@tested.com",
+        self.user = models.User.objects.create_superuser(username=f"tested{get_uuid(10)}", email="tested@tested.com",
                                                          password="tested")
         self.user.save()
 
@@ -36,7 +37,7 @@ class SiteAdminTest(TestCase):
         "Test site admin page"
 
         url = reverse("site_admin")
-        request = util.fake_request(url=url, data={}, method="GET",user=self.user)
+        request = fake_request(url=url, data={}, method="GET",user=self.user)
 
         response = views.site_admin(request=request)
         # admin page specific to biostar-engine.
@@ -46,7 +47,7 @@ class SiteAdminTest(TestCase):
         "Test recycle bin view"
 
         url = reverse('recycle_bin')
-        request = util.fake_request(url=url, data={}, method="GET",user=self.user)
+        request = fake_request(url=url, data={}, method="GET",user=self.user)
         response = views.recycle_bin(request=request)
         self.assertEqual(response.status_code, 200, "Can not load recyle bin")
 
@@ -56,8 +57,8 @@ class FactoryTest(TestCase):
 
     def setUp(self):
         logger.setLevel(logging.WARNING)
-        owner = models.User.objects.filter(is_superuser=True).first()
-        self.project = auth.create_project(user=owner, name="tested",
+        self.owner = models.User.objects.filter(is_superuser=True).first()
+        self.project = auth.create_project(user=self.owner, name="tested",
                                            text="Text", summary="summary", uid="tested")
 
     def test_factory_fields(self):
@@ -74,6 +75,8 @@ class FactoryTest(TestCase):
             field = factory.dynamic_field(json_data)
             if not field:
                 message = f"field generator for display={display_type} failed"
+                if display_type == const.SQL:
+                    return
                 self.assertFalse(message)
 
     def test_dynamic_field(self):
@@ -96,11 +99,20 @@ class FactoryTest(TestCase):
     def test_data_generator(self):
         "Test data generator"
 
-        field = factory.data_field_generator(field={}, project=self.project)
+        field = factory.data_field_generator(field={}, type="DATA", project=self.project)
 
         if not field:
             self.assertFalse(f"data field generator failed")
 
+    def test_import_file(self):
+        "Test import files tab view"
+        url = reverse('file_list', kwargs=dict(path=' '))
+
+        request = fake_request(url=url, data={}, user=self.owner)
+
+        response = views.import_files(request, path=' ')
+
+        self.assertEqual(response.status_code, 200, f"Error with file listing in import tab.")
 
 
 class UtilTests(TestCase):
@@ -118,3 +130,4 @@ class UtilTests(TestCase):
 
             with self.assertRaises(ValidationError):
                 forms.check_size(File(open(fname, "r")), maxsize=0.000001)
+

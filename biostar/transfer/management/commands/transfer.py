@@ -2,20 +2,22 @@ import logging
 import time
 import re
 import os
+from itertools import count, islice
 import html2text
-from taggit.models import Tag
+
 
 from django.core.management.base import BaseCommand
 from django.conf import settings
+
+from taggit.models import Tag
+
 from biostar.accounts.models import User, Profile
 from biostar.forum import util
 from biostar.forum.models import Post, Vote, Subscription, Badge, Award
 from biostar.transfer.models import UsersUser, PostsPost, PostsVote, PostsSubscription, BadgesAward, UsersProfile
-
 from biostar.utils import markdown
-logger = logging.getLogger("engine")
-from itertools import count, islice
 
+logger = logging.getLogger("engine")
 
 LIMIT = None
 
@@ -68,7 +70,7 @@ def bulk_copy_users(limit):
         for index, user in stream:
             progress(index=index,  msg="users")
 
-            username = f'{user.id}'
+            username = f"{user.name.replace(' ', '-')}-{user.id}"
             # Create user
             new_user = User(username=username, email=user.email, password=user.password,
                             is_active=user.is_active, is_superuser=user.is_admin, is_staff=user.is_staff)
@@ -295,7 +297,7 @@ def bulk_copy_posts(limit):
 def bulk_copy_subs(limit):
 
     users = {user.profile.uid: user for user in User.objects.all()}
-    posts = Post.objects.iterator()
+    posts = {post.uid: post for post in Post.objects.all()}
 
     def generate():
         subs = PostsSubscription.objects.order_by('-date')
@@ -311,10 +313,6 @@ def bulk_copy_subs(limit):
 
             # Skip incomplete data or subs already made
             if not (user and post):
-                continue
-
-            # Skip users that have a digest
-            if user.profile.digest_prefs != Profile.NO_DIGEST:
                 continue
 
             sub = Subscription(uid=sub.id, type=sub.type, user=user, post=post, date=sub.date)
@@ -393,6 +391,9 @@ class Command(BaseCommand):
         load_subs = options["subs"]
         limit = options.get("limit") or LIMIT
 
+        print(f"OLD_DATABASE (source): {settings.OLD_DATABASE}")
+        print(f"NEW_DATABASE (target): {settings.NEW_DATABASE}")
+
         #test()
         #return
 
@@ -416,6 +417,6 @@ class Command(BaseCommand):
 
         bulk_copy_votes(limit=limit)
 
-        #bulk_copy_subs(limit=limit)
+        bulk_copy_subs(limit=limit)
 
         return

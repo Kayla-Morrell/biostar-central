@@ -1,14 +1,15 @@
 {% load forum_tags %}
 {% load humanize %}
 
-{% if user %}
-    {% if user.profile.is_moderator %}
-        <i class="ui muted bolt icon" style="margin: 0"></i>
-    {%  elif score > 1000 %}
-         &diams;
+    {% if is_moderator %}
+        <i class="ui muted bolt icon"></i>
+    {% elif is_spammer %}
+        <i class="ui muted bug icon"></i>
+    {% elif score > 1000 %}
+        &diams;
     {% else %}
         &bull;
     {% endif %}
+
     {{ score|bignum }}
-{% endif %}
 

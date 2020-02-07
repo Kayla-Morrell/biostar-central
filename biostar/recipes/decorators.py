@@ -2,11 +2,9 @@ from functools import wraps
 
 from django.contrib import messages
 from django.shortcuts import redirect, reverse
-from django.utils.decorators import available_attrs
 from django.conf import settings
 from django.http import HttpResponse
 
-from rest_framework import status
 from . import models, auth
 
 # Share the logger with models
@@ -18,14 +16,20 @@ class read_access:
     Controls READ level access to urls.
     """
 
-    def __init__(self, obj_type):
-        self.type = obj_type
-        self.fallback_url = lambda : reverse("project_list")
+    def __init__(self, type, allowed_cors=None):
+        self.type = type
+        self.allowed_cors = allowed_cors
+        self.fallback_url = lambda: reverse("project_list")
 
     def __call__(self, function, *args, **kwargs):
         # Pass function attributes to the wrapper
-        @wraps(function, assigned=available_attrs(function))
+        @wraps(function)
         def wrapper(request, *args, **kwargs):
+
+            # Allow read access for the allowed CORS website.
+            origin = auth.detect_cores(request)
+            if self.allowed_cors and self.allowed_cors in origin:
+                return function(request, *args, **kwargs)
 
             # Each wrapped view must take an alphanumeric uid as parameter.
             uid = kwargs.get('uid')
@@ -34,7 +38,7 @@ class read_access:
             user = request.user
 
             # Fetches the object that will be checked for permissions.
-            instance = self.type.objects.get_all(uid=uid).first()
+            instance = self.type.objects.filter(uid=uid).first()
 
             # Object does not exist.
             if not instance:
@@ -54,11 +58,10 @@ class read_access:
                 return redirect(self.fallback_url())
 
             # Check the presence of READ or WRITE access
-            read_or_write = [models.Access.READ_ACCESS, models.Access.WRITE_ACCESS]
-            access = models.Access.objects.filter(user=user, project=project, access__in=read_or_write).first()
+            readable = auth.is_readable(user=user, project=project)
 
             # Project owners may read their project.
-            if access or project.owner == user:
+            if readable or project.owner == user:
                 return function(request, *args, **kwargs)
 
             # Deny access by default.
@@ -84,14 +87,14 @@ class write_access:
         """
 
         # Pass function attributes to the wrapper
-        @wraps(function, assigned=available_attrs(function))
+        @wraps(function)
         def _wrapped_view(request, *args, **kwargs):
             # Each wrapped view must take an alphanumeric uid as parameter.
             uid = kwargs.get('uid')
             user = request.user
 
             # Fetches the object that will be checked for permissions.
-            instance = self.type.objects.get_all(uid=uid).first()
+            instance = self.type.objects.filter(uid=uid).first()
             if not instance:
                 messages.error(request, f"Object id {uid} does not exist.")
                 return redirect(reverse("project_list"))
@@ -106,7 +109,7 @@ class write_access:
             project = instance.project
 
             # Check write to an object.
-            access = auth.has_write_access(user=user, project=project)
+            access = auth.is_writable(user=user, project=project)
 
             # Project owners may write their project.
             if access:
@@ -141,28 +144,28 @@ class require_api_key:
     def __call__(self, func, *args, **kwargs):
 
         # Pass function attributes to the wrapper
-        @wraps(func, assigned=available_attrs(func))
+        @wraps(func)
         def _api_view(request, *args, **kwargs):
             # Each wrapped view must take an alphanumeric uid as parameter.
             api_key = parse_api_key(request=request)
 
             # Get the Recipe uid
             uid = kwargs.get("uid")
-            obj = self.type.objects.get_all(uid=uid).first()
+            obj = self.type.objects.filter(uid=uid).first()
 
             if not obj:
                 msg = dict(error="Object does not exist.")
-                return HttpResponse(content=msg, status=status.HTTP_404_NOT_FOUND)
+                return HttpResponse(content=msg, status=404)
 
             # All PUT requests will require an API key.
             if request.method == "PUT" and settings.API_KEY != api_key:
                 msg = dict(error="API key is required for all PUT requests.")
-                return HttpResponse(content=msg, status=status.HTTP_401_UNAUTHORIZED)
+                return HttpResponse(content=msg, status=401)
 
             # API key required when asking for GET requests of private recipes.
             elif request.method == "GET" and settings.API_KEY != api_key and obj.project.is_private:
                 msg = dict(error="Private recipes can not be accessed without an API key param (?k=).")
-                return HttpResponse(content=msg, status=status.HTTP_401_UNAUTHORIZED)
+                return HttpResponse(content=msg, status=401)
 
             return func(request, *args, **kwargs)
 

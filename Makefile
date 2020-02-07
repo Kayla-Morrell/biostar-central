@@ -39,10 +39,15 @@ emailer:
 	@echo DJANGO_SETTINGS_MODULE=${DJANGO_SETTINGS_MODULE}
 	@echo DJANGO_APP=${DJANGO_APP}
 
-pg:
-	$(eval DJANGO_SETTINGS_MODULE := conf.examples.pg.forum_settings)
+recipes_pg:
+	$(eval DJANGO_SETTINGS_MODULE := conf.examples.pg.recipes_pg_settings)
 	@echo DJANGO_SETTINGS_MODULE=${DJANGO_SETTINGS_MODULE}
+	$(eval UWSGI_INI := conf/uwsgi/engine_uwsgi.ini)
 
+pg:
+	$(eval DJANGO_SETTINGS_MODULE := conf.examples.pg.pg_settings)
+	@echo DJANGO_SETTINGS_MODULE=${DJANGO_SETTINGS_MODULE}
+	$(eval UWSGI_INI := conf/uwsgi/forum_uwsgi.ini)
 
 recipes:
 	$(eval DJANGO_SETTINGS_MODULE := biostar.recipes.settings)
@@ -56,6 +61,21 @@ recipes:
 	@echo DJANGO_SETTINGS_MODULE=${DJANGO_SETTINGS_MODULE}
 	@echo DJANGO_APP=${DJANGO_APP}
 	@echo DATABASE_NAME=${DATABASE_NAME}
+
+
+bioconductor:
+	$(eval DJANGO_SETTINGS_MODULE := themes.bioconductor.settings)
+	$(eval DJANGO_APP := biostar.forum)
+	$(eval UWSGI_INI := themes/bioconductor/conf/uwsgi.ini)
+	$(eval ANSIBLE_HOST := supportupgrade.bioconductor.org)
+	$(eval ANSIBLE_ROOT := themes/bioconductor/conf/ansible)
+	$(eval SUPERVISOR_NAME := forum)
+	$(eval ENGINE_DIR := /export/www/biostar-central)
+
+	@echo DJANGO_SETTINGS_MODULE=${DJANGO_SETTINGS_MODULE}
+	@echo DJANGO_APP=${DJANGO_APP}
+	@echo DATABASE_NAME=${DATABASE_NAME}
+
 
 forum:
 	$(eval DJANGO_SETTINGS_MODULE := biostar.forum.settings)
@@ -108,8 +128,13 @@ test:
 	coverage html --skip-covered
 
 test_all:
-	python manage.py test --settings biostar.test.test_settings -v 2 --failfast
+	#python manage.py test --settings biostar.test.test_settings -v 2 --failfast
 	coverage run manage.py test --settings biostar.test.test_settings -v 2 --failfast
+	coverage html --skip-covered
+
+test_pg:
+	#python manage.py test --settings biostar.test.pg_test_settings -v 2 --failfast
+	coverage run manage.py test --settings biostar.test.pg_test_settings -v 2 --failfast
 	coverage html --skip-covered
 
 index:
@@ -120,7 +145,12 @@ index:
 reindex:
 	@echo INDEX_NAME=${INDEX_NAME}
 	@echo DJANGO_SETTINGS_MODULE=${DJANGO_SETTINGS_MODULE}
-	python manage.py index --remove --reset --index 130000 --settings ${DJANGO_SETTINGS_MODULE}
+	python manage.py index --remove --reset --index 3700000 --settings ${DJANGO_SETTINGS_MODULE}
+
+
+stress_test:
+	jmeter -n -t biostar/test/biostars.jmx -l result.jtl
+
 
 recipes_demo: recipes reset init load_recipes serve
 
@@ -150,12 +180,12 @@ uwsgi:
 	@echo UWSGI_INI=${UWSGI_INI}
 	uwsgi --ini ${UWSGI_INI}
 
-pg_drop:
+pg_drop: pg
 	dropdb --if-exists ${DATABASE_NAME}
 	createdb ${DATABASE_NAME}
 
 transfer:
-	python manage.py migrate --settings conf.examples.pg.forum_settings
+	python manage.py migrate --settings conf.examples.pg.pg_settings
 	python manage.py transfer -n 300 --settings biostar.transfer.settings
 
 next:
