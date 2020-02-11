@@ -2,6 +2,7 @@ import difflib
 import logging
 import uuid, copy
 import os
+import subprocess
 from mimetypes import guess_type
 
 import hjson
@@ -22,6 +23,10 @@ from .models import Data, Analysis, Job, Project, Access
 
 logger = logging.getLogger("engine")
 
+JOB_COLORS = {Job.SPOOLED: "spooled",
+              Job.ERROR: "errored", Job.QUEUED: "queued",
+              Job.RUNNING: "running", Job.COMPLETED: "completed"
+              }
 
 def get_uuid(limit=32):
     return str(uuid.uuid4())[:limit]
@@ -441,8 +446,11 @@ def create_job(analysis, user=None, json_text='', json_data={}, name=None, state
         job.save()
 
         # Update the projects lastedit user when a job is created
+        #job_count = project.job_set.filter(deleted=False).count()
+        job_count = Job.objects.filter(deleted=False, project=project).count()
         Project.objects.filter(uid=project.uid).update(lastedit_user=owner,
-                                                       lastedit_date=now())
+                                                       lastedit_date=now(),
+                                                       jobs_count=job_count)
         logger.info(f"Created job id={job.id} name={job.name}")
 
     return job
@@ -455,9 +463,50 @@ def delete_object(obj, request):
     if access:
         obj.deleted = not obj.deleted
         obj.save()
+        data_count = Data.objects.filter(deleted=False, project=obj.project).count()
+        recipes_count = Analysis.objects.filter(deleted=False, project=obj.project).count()
+        job_count = Job.objects.filter(deleted=False, project=obj.project).count()
+
+        Project.objects.filter(uid=obj.project.uid).update(data_count=data_count,
+                                                           recipes_count=recipes_count,
+                                                           jobs_count=job_count)
 
     return obj.deleted
 
+
+def listing(root):
+    paths = []
+
+    try:
+        paths = os.listdir(root)
+
+        def transform(path):
+            path = os.path.join(root, path)
+            tstamp = os.stat(path).st_mtime
+            size = os.stat(path).st_size
+            rel_path = os.path.relpath(path, settings.IMPORT_ROOT_DIR)
+            is_dir = os.path.isdir(path)
+            basename = os.path.basename(path)
+            return rel_path, tstamp, size, is_dir, basename
+
+        paths = map(transform, paths)
+        # Sort files by timestamps
+        paths = sorted(paths, key=lambda x: x[1], reverse=True)
+
+    except Exception as exc:
+        logging.error(exc)
+
+    return paths
+
+def job_color(job):
+    try:
+        if isinstance(job, Job):
+            return JOB_COLORS.get(job.state, "")
+    except Exception as exc:
+        logger.error(exc)
+        return ''
+
+    return
 
 def guess_mimetype(fname):
     "Return mimetype for a known text filename"

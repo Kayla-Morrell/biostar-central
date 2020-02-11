@@ -11,7 +11,6 @@
 
     {% compress css %}
         <link href="{% static 'semantic.min.css' %}" rel="stylesheet">
-
         <link href="{% static 'prism.css' %}" rel="stylesheet">
     {% endcompress %}
 
@@ -29,12 +28,13 @@
 
         {% recipe_details recipe %}
         {% if recipe.is_cloned %}
-            <div class="ui vertical cloned segment">
+            <div class="ui vertical cloned segment" style="padding-top: 5px">
             <span class="muted">
                 <i class="linkify icon"></i>
                 This recipe is a clone.
                 It remains synchronized with the <a href="{{ recipe.root.url }}">parent recipe</a>
-                written by <a href="{{ recipe.root.owner.profile.get_absolute_url }}">{{ recipe.root.owner.profile.name|truncatechars:30 }}</a>.
+                written by <a
+                    href="{{ recipe.root.owner.profile.get_absolute_url }}">{{ recipe.root.owner.profile.name|truncatechars:30 }}</a>.
 
             </span>
             </div>
@@ -95,13 +95,21 @@
             </p>
         </h3>
 
-        <div class="ui basic segment">
+        <div class="ui basic segment" {# id="inplace-edit" data-uid="{{ recipe.uid }}" #} >
             <pre><code class="language-bash line-numbers">{{ script }}</code></pre>
         </div>
+
     </div>
 
     <div id="copy-message-{{ recipe.uid }}"></div>
 
+<script>
+
+    $('#inplace-edit').dblclick(function (event) {
+            var uid = $(this).data('uid');
+            inplace_edit(uid);
+    });
+</script>
 
 {% endblock %}
 
